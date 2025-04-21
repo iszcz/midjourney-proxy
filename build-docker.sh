@@ -8,8 +8,11 @@ LATEST_TAG="latest"
 # 显示构建信息
 echo "开始构建 Docker 镜像: $IMAGE_NAME:$VERSION"
 
-# 构建Docker镜像
-docker build --platform linux/amd64 -t $IMAGE_NAME:$VERSION -t $IMAGE_NAME:$LATEST_TAG -f src/Midjourney.API/Dockerfile .
+# 创建并使用构建器
+docker buildx create --name multiarch-builder --use
+
+# 构建AMD64架构镜像
+docker buildx build --platform linux/amd64 -t $IMAGE_NAME:$VERSION -t $IMAGE_NAME:$LATEST_TAG -f src/Midjourney.API/Dockerfile --push .
 
 # 检查构建是否成功
 if [ $? -eq 0 ]; then

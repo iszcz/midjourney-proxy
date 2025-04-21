@@ -14,21 +14,36 @@
 - ✅ Implement AI review in Imagine, Shorten and Modal methods
 - Task completed: Added AI content review for user prompts
 
+[2024-05-06] Task: Improve AI review handling for URLs and parameters
+- ✅ Update AI review in Imagine method to separate URLs and parameters
+- ✅ Add AI review with URL and parameter separation to Shorten method
+- ✅ Add AI review with URL and parameter separation to Modal method
+- Task completed: Enhanced AI review to only process text content while preserving URLs and parameters
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
 [2024-05-04] AI review services can be integrated with translation services to provide additional content moderation capabilities.
+[2024-05-06] When processing text with AI services, it's important to separate and preserve special elements like URLs and parameters to avoid modifying them incorrectly.
+[2024-05-06] The same text extraction pattern can be reused across different processing functions (translation, banned word checking, AI review) to ensure consistent handling.
 
 ## Project Patterns
 [2024-05-04] The Midjourney-proxy project uses both a TaskService class and a BannedPromptUtils static class for banned word handling, so both needed to be updated.
 [2024-05-04] Services are registered in ServiceCollectionExtensions and can be injected into controllers.
 [2024-05-04] Configuration options are added to ProxyProperties class and accessed through GlobalConfiguration.Setting.
+[2024-05-06] Text processing in this project follows a pattern of: extracting parameters → extracting URLs → processing text content → recombining all parts.
 
 ## Error Corrections
 [2024-05-04] Fixed the banned word handling to remove banned words instead of throwing exceptions.
+[2024-05-06] Fixed AI review processing to avoid modifying URLs and parameters which could break functionality.
 
 # Project Guidelines
 [2024-05-04] For content moderation:
 - Prefer to clean content when possible instead of rejecting it entirely
 - Maintain both service class and utility class implementations in sync
 - Use AI services to enhance content moderation beyond simple word filtering 
+[2024-05-06] For text processing:
+- Always separate URLs and parameters before processing text content
+- Process only the actual text content with AI/NLP services
+- Preserve original formatting of specialized content (URLs, parameters)
+- Apply consistent processing patterns across similar functions 
