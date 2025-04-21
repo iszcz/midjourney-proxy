@@ -6,12 +6,11 @@ services:
       dockerfile: src/Midjourney.API/Dockerfile
     container_name: mjopen-rix
     restart: always
+    network_mode: host
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
-      - ASPNETCORE_URLS=http://+:8080
+      - ASPNETCORE_URLS=http://+:8186
       - TZ=Asia/Shanghai
-    ports:
-      - "8186:8080"
     user: root
     volumes:
       - .:/src                                     # 源码目录
@@ -23,7 +22,3 @@ services:
       - ./appsettings.Production.json:/app/appsettings.Production.json:ro      # 配置文件
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
-
-networks:
-  midjourney-network:
-    driver: bridge 
