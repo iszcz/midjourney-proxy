@@ -87,7 +87,7 @@ namespace Midjourney.Infrastructure.Services
                 model = _model,
                 messages = new[]
                 {
-                    new { role = "system", content = "把中文翻译成英文" },
+                    new { role = "system", content = "翻译用户提交的文本为英文，要求只需要输出翻译后的文本，不要输出任何解释" },
                     new { role = "user", content = prompt }
                 },
                 max_tokens = _maxTokens,

@@ -59,6 +59,7 @@ namespace Midjourney.API.Controllers
         private readonly GenerationSpeedMode? _mode;
         private readonly WorkContext _workContext;
         private readonly IMemoryCache _memoryCache;
+        private readonly IPromptReviewService _promptReviewService;
 
         public SubmitController(
             ITranslateService translateService,
@@ -69,7 +70,8 @@ namespace Midjourney.API.Controllers
             IHttpContextAccessor httpContextAccessor,
             WorkContext workContext,
             DiscordLoadBalancer discordLoadBalancer,
-            IMemoryCache memoryCache)
+            IMemoryCache memoryCache,
+            IPromptReviewService promptReviewService)
         {
             _memoryCache = memoryCache;
             _translateService = translateService;
@@ -80,6 +82,7 @@ namespace Midjourney.API.Controllers
             _discordHelper = discordHelper;
             _workContext = workContext;
             _discordLoadBalancer = discordLoadBalancer;
+            _promptReviewService = promptReviewService;
 
             var user = _workContext.GetUser();
 
@@ -150,13 +153,28 @@ namespace Midjourney.API.Controllers
             string promptEn = TranslatePrompt(prompt, task.RealBotType ?? task.BotType);
             try
             {
-                _taskService.CheckBanned(promptEn);
+                // 清理违规词
+                promptEn = _taskService.CheckAndCleanBanned(promptEn);
             }
             catch (BannedPromptException e)
             {
                 return Ok(SubmitResultVO.Fail(ReturnCode.BANNED_PROMPT, "可能包含敏感词")
                     .SetProperty("promptEn", promptEn)
                     .SetProperty("bannedWord", e.Message));
+            }
+
+            // AI审核处理
+            if (GlobalConfiguration.Setting.EnableAIReview)
+            {
+                var reviewResult = _promptReviewService.ReviewPrompt(promptEn);
+                
+                if (reviewResult.NeedModify)
+                {
+                    _logger.LogInformation("提示词已被AI审核修改: {Original} -> {Modified}, 原因: {Reason}", 
+                        promptEn, reviewResult.Prompt, reviewResult.Reason);
+                        
+                    promptEn = reviewResult.Prompt;
+                }
             }
 
             List<DataUrl> dataUrls = new List<DataUrl>();
@@ -476,7 +494,8 @@ namespace Midjourney.API.Controllers
             var promptEn = TranslatePrompt(prompt, task.RealBotType ?? task.BotType);
             try
             {
-                _taskService.CheckBanned(promptEn);
+                // 清理违规词
+                promptEn = _taskService.CheckAndCleanBanned(promptEn);
             }
             catch (BannedPromptException e)
             {
@@ -680,7 +699,8 @@ namespace Midjourney.API.Controllers
             var promptEn = TranslatePrompt(prompt, task.RealBotType ?? task.BotType);
             try
             {
-                _taskService.CheckBanned(promptEn);
+                // 清理违规词
+                promptEn = _taskService.CheckAndCleanBanned(promptEn);
             }
             catch (BannedPromptException e)
             {

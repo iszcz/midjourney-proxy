@@ -81,6 +81,9 @@ namespace Midjourney.API
                 services.AddSingleton<ITranslateService, BaiduTranslateService>();
             }
 
+            // AI审核服务
+            services.AddSingleton<IPromptReviewService, GPTPromptReviewService>();
+
             // 存储服务
             StorageHelper.Configure();
 

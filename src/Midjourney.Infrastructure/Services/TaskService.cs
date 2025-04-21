@@ -140,6 +140,51 @@ namespace Midjourney.Infrastructure.Services
         }
 
         /// <summary>
+        /// 验证并清理违规词
+        /// </summary>
+        /// <param name="promptEn">输入的提示词</param>
+        /// <returns>清理后的提示词</returns>
+        public string CheckAndCleanBanned(string promptEn)
+        {
+            if (string.IsNullOrWhiteSpace(promptEn))
+                return promptEn;
+                
+            var result = promptEn;
+            var finalPromptEn = promptEn.ToLower(CultureInfo.InvariantCulture);
+
+            var dic = GetBannedWordsCache();
+            foreach (var item in dic)
+            {
+                foreach (string word in item.Value)
+                {
+                    var regex = new Regex($"\\b{Regex.Escape(word)}\\b", RegexOptions.IgnoreCase);
+                    while (true)
+                    {
+                        var match = regex.Match(finalPromptEn);
+                        if (!match.Success)
+                            break;
+                            
+                        // 找到原始文本中对应的位置
+                        int index = finalPromptEn.IndexOf(word, StringComparison.OrdinalIgnoreCase);
+                        
+                        if (index >= 0)
+                        {
+                            // 从原始文本和小写文本中删除匹配的词
+                            result = result.Remove(index, word.Length);
+                            finalPromptEn = finalPromptEn.Remove(index, word.Length);
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            return result;
+        }
+
+        /// <summary>
         /// 提交 imagine 任务。
         /// </summary>
         /// <param name="info"></param>

@@ -1,0 +1,34 @@
+# Current Plan and Status
+[2024-05-04] Task: Modify banned word handling
+- ✅ Create CheckAndCleanBanned method in TaskService
+- ✅ Create CheckAndCleanBanned method in BannedPromptUtils
+- ✅ Update ITaskService interface 
+- ✅ Update controllers to use CheckAndCleanBanned
+- Task completed: Modified the system to remove banned words instead of throwing exceptions
+
+[2024-05-04] Task: Add AI review functionality for prompts
+- ✅ Create IPromptReviewService interface
+- ✅ Create GPTPromptReviewService implementation
+- ✅ Add EnableAIReview config to ProxyProperties
+- ✅ Register service in ServiceCollectionExtensions
+- ✅ Implement AI review in Imagine, Shorten and Modal methods
+- Task completed: Added AI content review for user prompts
+
+# Learned Knowledge
+## Technical Knowledge
+[2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
+[2024-05-04] AI review services can be integrated with translation services to provide additional content moderation capabilities.
+
+## Project Patterns
+[2024-05-04] The Midjourney-proxy project uses both a TaskService class and a BannedPromptUtils static class for banned word handling, so both needed to be updated.
+[2024-05-04] Services are registered in ServiceCollectionExtensions and can be injected into controllers.
+[2024-05-04] Configuration options are added to ProxyProperties class and accessed through GlobalConfiguration.Setting.
+
+## Error Corrections
+[2024-05-04] Fixed the banned word handling to remove banned words instead of throwing exceptions.
+
+# Project Guidelines
+[2024-05-04] For content moderation:
+- Prefer to clean content when possible instead of rejecting it entirely
+- Maintain both service class and utility class implementations in sync
+- Use AI services to enhance content moderation beyond simple word filtering 

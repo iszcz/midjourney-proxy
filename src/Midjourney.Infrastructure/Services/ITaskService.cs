@@ -62,6 +62,13 @@ namespace Midjourney.Infrastructure.Services
         void CheckBanned(string promptEn);
 
         /// <summary>
+        /// 验证并清理违规词
+        /// </summary>
+        /// <param name="promptEn">输入的提示词</param>
+        /// <returns>清理后的提示词</returns>
+        string CheckAndCleanBanned(string promptEn);
+
+        /// <summary>
         /// 提交 Imagine 任务。
         /// </summary>
         /// <param name="task">任务对象。</param>

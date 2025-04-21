@@ -1,8 +1,8 @@
 version: '3'
 services:
   mjopen:
-    image: registry.cn-guangzhou.aliyuncs.com/trueai-org/midjourney-proxy
-    container_name: mjopen
+    image: rixapi/mjopen:latest
+    container_name: mjopen-rix
     restart: always
     environment:
       - DEMO=true

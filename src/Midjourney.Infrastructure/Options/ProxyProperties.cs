@@ -164,6 +164,26 @@ namespace Midjourney.Infrastructure
         /// 本地存储配置
         /// </summary>
         public LocalStorageOptions LocalStorage { get; set; } = new LocalStorageOptions();
+
+        /// <summary>
+        /// 是否启用中文翻译
+        /// </summary>
+        public bool EnableMjTranslate { get; set; } = true;
+
+        /// <summary>
+        /// 是否启用Niji翻译
+        /// </summary>
+        public bool EnableNijiTranslate { get; set; } = true;
+
+        /// <summary>
+        /// 是否启用AI审核
+        /// </summary>
+        public bool EnableAIReview { get; set; } = false;
+
+        /// <summary>
+        /// 拒绝所有包含违规词的请求.
+        /// </summary>
+        public bool DenyAllBannedPrompt { get; set; } = false;
     }
 
     /// <summary>
