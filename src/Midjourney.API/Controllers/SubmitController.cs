@@ -150,6 +150,120 @@ namespace Midjourney.API.Controllers
                 task.BotType = EBotType.NIJI_JOURNEY;
             }
 
+            NewTaskDoFilter(task, imagineDTO.AccountFilter);
+            // 判断是否开启垂直领域
+            var domainIds = new List<string>();
+            var isDomain = GlobalConfiguration.Setting.IsVerticalDomain;
+            if (isDomain)
+            {
+                // 对 Promat 分割为单个单词
+                // 以 ',' ' ' '.' '-' 为分隔符
+                // 并且过滤为空的字符串
+                var prompts = task.Prompt.Split(new char[] { ',', ' ', '.', '-' })
+                    .Where(c => !string.IsNullOrWhiteSpace(c))
+                    .Select(c => c?.Trim()?.ToLower())
+                    .Distinct().ToList();
+
+                var domains = _taskService.GetDomainCache();
+                foreach (var promptWord in prompts)
+                {
+                    foreach (var domain in domains)
+                    {
+                        if (domain.Value.Contains(promptWord) || domain.Value.Contains($"{promptWord}s"))
+                        {
+                            domainIds.Add(domain.Key);
+                        }
+                    }
+                }
+
+                // 如果没有找到领域，则不使用领域账号
+                if (domainIds.Count == 0)
+                {
+                    isDomain = false;
+                }
+            }
+            var instance = _discordLoadBalancer.ChooseInstance(task.AccountFilter,
+                isNewTask: true,
+                botType: task.RealBotType ?? task.BotType,
+                isDomain: isDomain,
+                domainIds: domainIds);
+
+            if (instance == null || !instance.Account.IsAcceptNewTask)
+            {
+                if (isDomain && domainIds.Count > 0)
+                {
+                    // 说明没有获取到符合领域的账号，再次获取不带领域的账号
+                    instance = _discordLoadBalancer.ChooseInstance(task.AccountFilter,
+                        isNewTask: true,
+                        botType: task.RealBotType ?? task.BotType,
+                        isDomain: false);
+                }
+            }
+
+            if (instance == null || instance?.Account?.IsAcceptNewTask != true)
+            {
+                return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
+            }
+            if (!instance.IsIdleQueue)
+            {
+                return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
+            }
+
+            string promptEn = TranslatePrompt(prompt, task.RealBotType ?? task.BotType);
+            try
+            {
+                // 清理违规词
+                promptEn = _taskService.CheckAndCleanBanned(promptEn);
+            }
+            catch (BannedPromptException e)
+            {
+                return Ok(SubmitResultVO.Fail(ReturnCode.BANNED_PROMPT, "可能包含敏感词")
+                    .SetProperty("promptEn", promptEn)
+                    .SetProperty("bannedWord", e.Message));
+            }
+
+            // AI审核处理
+            if (GlobalConfiguration.Setting.EnableAIReview)
+            {
+                string paramStr = "";
+                var paramMatcher = Regex.Match(promptEn, "\\x20+--[a-z]+.*$", RegexOptions.IgnoreCase);
+                if (paramMatcher.Success)
+                {
+                    paramStr = paramMatcher.Value;
+                }
+                string promptWithoutParam = promptEn.Substring(0, promptEn.Length - paramStr.Length);
+                
+                List<string> imageUrls = new List<string>();
+                var imageMatcher = Regex.Matches(promptWithoutParam, "https?://[a-z0-9-_:@&?=+,.!/~*'%$]+\\x20+", RegexOptions.IgnoreCase);
+                foreach (Match match in imageMatcher)
+                {
+                    imageUrls.Add(match.Value);
+                }
+                
+                string textToReview = promptWithoutParam;
+                foreach (string imageUrl in imageUrls)
+                {
+                    textToReview = textToReview.Replace(imageUrl, "");
+                }
+                
+                // 只对文本部分进行AI审核
+                if (!string.IsNullOrWhiteSpace(textToReview))
+                {
+                    var reviewResult = _promptReviewService.ReviewPrompt(textToReview);
+                    
+                    if (reviewResult.NeedModify)
+                    {
+                        _logger.LogInformation("提示词已被AI审核修改: {Original} -> {Modified}, 原因: {Reason}", 
+                            textToReview, reviewResult.Prompt, reviewResult.Reason);
+                            
+                        textToReview = reviewResult.Prompt;
+                    }
+                }
+                
+                // 重新组合审核后的文本与URL和参数
+                promptEn = string.Concat(imageUrls) + textToReview + paramStr;
+            }
+
             List<DataUrl> dataUrls = new List<DataUrl>();
             try
             {
@@ -161,11 +275,10 @@ namespace Midjourney.API.Controllers
                 return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "base64格式错误"));
             }
 
+            task.PromptEn = promptEn;
             task.Description = $"/imagine {prompt}";
 
-            NewTaskDoFilter(task, imagineDTO.AccountFilter);
-
-            var data = _taskService.SubmitImagine(task, dataUrls);
+            var data = _taskService.SubmitImagine(task, dataUrls, instance);
             return Ok(data);
         }
 

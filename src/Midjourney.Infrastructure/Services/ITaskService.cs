@@ -24,6 +24,7 @@
 
 using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.Util;
+using Midjourney.Infrastructure.LoadBalancer;
 
 namespace Midjourney.Infrastructure.Services
 {
@@ -74,7 +75,7 @@ namespace Midjourney.Infrastructure.Services
         /// <param name="task">任务对象。</param>
         /// <param name="dataUrls">图片数据列表。</param>
         /// <returns>提交结果。</returns>
-        SubmitResultVO SubmitImagine(TaskInfo task, List<DataUrl> dataUrls);
+        SubmitResultVO SubmitImagine(TaskInfo task, List<DataUrl> dataUrls, DiscordInstance instance);
 
         /// <summary>
         /// 提交 show 任务
