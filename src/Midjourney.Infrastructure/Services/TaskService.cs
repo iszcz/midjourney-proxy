@@ -251,6 +251,63 @@ namespace Midjourney.Infrastructure.Services
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
 
+            string promptEn = _submitController.TranslatePrompt(info.Prompt, info.RealBotType ?? info.BotType);
+            try
+            {
+                // 清理违规词
+                promptEn = CheckAndCleanBanned(promptEn);
+            }
+            catch (BannedPromptException e)
+            {
+                return SubmitResultVO.Fail(ReturnCode.BANNED_PROMPT, "可能包含敏感词")
+                    .SetProperty("promptEn", promptEn)
+                    .SetProperty("bannedWord", e.Message);
+            }
+
+            // AI审核处理
+            if (GlobalConfiguration.Setting.EnableAIReview)
+            {
+                string paramStr = "";
+                var paramMatcher = Regex.Match(promptEn, "\\x20+--[a-z]+.*$", RegexOptions.IgnoreCase);
+                if (paramMatcher.Success)
+                {
+                    paramStr = paramMatcher.Value;
+                }
+                string promptWithoutParam = promptEn.Substring(0, promptEn.Length - paramStr.Length);
+                
+                List<string> imageUrls = new List<string>();
+                var imageMatcher = Regex.Matches(promptWithoutParam, "https?://[a-z0-9-_:@&?=+,.!/~*'%$]+\\x20+", RegexOptions.IgnoreCase);
+                foreach (Match match in imageMatcher)
+                {
+                    imageUrls.Add(match.Value);
+                }
+                
+                string textToReview = promptWithoutParam;
+                foreach (string imageUrl in imageUrls)
+                {
+                    textToReview = textToReview.Replace(imageUrl, "");
+                }
+                
+                // 只对文本部分进行AI审核
+                if (!string.IsNullOrWhiteSpace(textToReview))
+                {
+                    var reviewResult = _promptReviewService.ReviewPrompt(textToReview);
+                    
+                    if (reviewResult.NeedModify)
+                    {
+                        _logger.LogInformation("提示词已被AI审核修改: {Original} -> {Modified}, 原因: {Reason}", 
+                            textToReview, reviewResult.Prompt, reviewResult.Reason);
+                            
+                        textToReview = reviewResult.Prompt;
+                    }
+                }
+                
+                // 重新组合审核后的文本与URL和参数
+                promptEn = string.Concat(imageUrls) + textToReview + paramStr;
+            }
+
+            info.PromptEn = promptEn;
+
             info.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, instance.ChannelId);
             info.InstanceId = instance.ChannelId;
 
