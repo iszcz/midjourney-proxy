@@ -1109,10 +1109,39 @@ namespace Midjourney.API.Controllers
                     string paramNoStrEn = _translateService.TranslateToEnglish(paramNoStr).Trim();
 
                     // 提取 --no 之前的参数
-                    paramStr = paramStr.Substring(0, paramNomatcher.Index);
+                    string paramStrBefore = paramStr.Substring(0, paramNomatcher.Index);
+                    
+                    // 提取 --no 后面的其他参数
+                    string paramStrAfter = "";
+                    int endOfNoParam = paramNomatcher.Index + paramNomatcher.Length;
+                    if (endOfNoParam < paramStr.Length)
+                    {
+                        // 找到--no参数后的第一个--开始位置
+                        int nextParamIndex = paramStr.IndexOf("--", endOfNoParam);
+                        if (nextParamIndex >= 0)
+                        {
+                            paramStrAfter = paramStr.Substring(nextParamIndex);
+                        }
+                        else
+                        {
+                            // 如果没有下一个--参数，但还有其他内容，保留这些内容
+                            paramStrAfter = paramStr.Substring(endOfNoParam);
+                        }
+                    }
 
-                    // 替换 --no 参数
-                    paramStr = paramStr + paramNomatcher.Result("--no " + paramNoStrEn + " ");
+                    // 替换 --no 参数，并保留后面的参数
+                    paramStr = paramStrBefore + "--no " + paramNoStrEn;
+                    
+                    // 如果后面还有内容，确保加上空格再拼接
+                    if (!string.IsNullOrWhiteSpace(paramStrAfter))
+                    {
+                        // 确保参数之间有适当的空格
+                        if (!paramStrAfter.StartsWith(" "))
+                        {
+                            paramStr += " ";
+                        }
+                        paramStr += paramStrAfter;
+                    }
                 }
             }
             return string.Concat(imageUrls) + text + paramStr;
