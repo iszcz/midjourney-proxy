@@ -894,6 +894,7 @@ namespace Midjourney.Infrastructure
                                         "Invalid link", // 无效链接
                                         "Request cancelled due to output filters",
                                         "Queue full", // 执行中的队列已满
+                                        "Unlock your personalization", // 任务已排队
                                     };
 
                                     // 跳过的 title
