@@ -1878,6 +1878,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
             var paramsStr = ReplaceInteractionParams(json, nonce);
             var obj = JObject.Parse(paramsStr);
             paramsStr = obj.ToString();
+            _logger.Information("自动切换慢速模式，开始 {@0}", Account.ChannelId);
             return await PostJsonAndCheckStatusAsync(paramsStr);
         }
 

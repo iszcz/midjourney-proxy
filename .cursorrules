@@ -20,6 +20,12 @@
 - ✅ Add AI review with URL and parameter separation to Modal method
 - Task completed: Enhanced AI review to only process text content while preserving URLs and parameters
 
+[2024-05-09] Task: Investigate NullReferenceException in TaskService.SubmitSeed
+- Analyze stack trace and identify error origin in `TaskService.SubmitSeed` line 1138.
+- Hypothesize cause: `TaskInfo` object or its critical properties (e.g., `Id`, `Nonce`, `BotType`) are null.
+- Suggest debugging steps: Review code at error location, trace `TaskInfo` object creation and population from `TaskController.ImageSeed`.
+- Status: Initial analysis complete, pending user code review.
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
@@ -37,6 +43,8 @@
 [2024-05-04] Fixed the banned word handling to remove banned words instead of throwing exceptions.
 [2024-05-06] Fixed AI review processing to avoid modifying URLs and parameters which could break functionality.
 
+[2024-05-09] Investigated NullReferenceException in `TaskService.SubmitSeed`. Probable cause: The `TaskInfo` object passed to `SubmitSeed` is null, or one of its critical properties (e.g., `Id` for `jobId`, `Nonce`, or properties determining `BotType`) required for the seed operation is null. This can happen if the task retrieval in `TaskController.ImageSeed` fails or returns incomplete data. Recommended checking data retrieval logic for `TaskInfo` and ensuring all necessary fields are populated before or within `SubmitSeed` at line 1138 of `TaskService.cs`.
+
 # Project Guidelines
 [2024-05-04] For content moderation:
 - Prefer to clean content when possible instead of rejecting it entirely
@@ -47,3 +55,39 @@
 - Process only the actual text content with AI/NLP services
 - Preserve original formatting of specialized content (URLs, parameters)
 - Apply consistent processing patterns across similar functions 
+
+# System Updates
+[2024-05-09] Initial system update. Added standard operational rules and preferences.
+
+# Standard Rules and Preferences
+## 1. Code Modification Preferences
+- Prefer minimal code changes.
+- Prioritize cautious and precise modifications.
+- Maintain code functionality.
+- Document all changes.
+
+## 2. Programming Standards
+- C Language: Adhere to MISRA-C-2012 standards.
+- Other Languages: Apply appropriate, recognized standards.
+- Document standard compliance.
+- Note any necessary deviations from standards.
+
+## 3. Language and Communication
+- Respond in Chinese regardless of input language.
+- Maintain English content within the .cursorrules file.
+- Support bilingual interaction.
+- Ensure accuracy of technical terminology.
+
+## 4. Thinking Process
+- Apply Chain-of-Thought (CoT) reasoning.
+- Display dialectical analysis.
+- Format thought processes within ```thinking``` code blocks.
+- Include step-by-step reasoning.
+
+## 5. Response Protocol
+```markdown
+# 分析步骤
+1. 在代码块中显示思维过程
+2. 提供详细推理
+3. 用中文呈现结论
+``` 

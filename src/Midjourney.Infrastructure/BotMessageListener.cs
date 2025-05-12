@@ -943,7 +943,7 @@ namespace Midjourney.Infrastructure
                                             // 如果当前不是慢速，则切换慢速，加锁切换
                                             if (Account.MjFastModeOn || Account.NijiFastModeOn)
                                             {
-                                                _ = AsyncLocalLock.TryLockAsync($"relax:{Account.ChannelId}", TimeSpan.FromSeconds(15), async () =>
+                                                _ = AsyncLocalLock.TryLockAsync($"relax:{Account.ChannelId}", TimeSpan.FromSeconds(5), async () =>
                                                 {
                                                     try
                                                     {
