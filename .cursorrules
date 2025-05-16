@@ -26,6 +26,14 @@
 - Suggest debugging steps: Review code at error location, trace `TaskInfo` object creation and population from `TaskController.ImageSeed`.
 - Status: Initial analysis complete, pending user code review.
 
+[2024-05-10] Task: Investigate and fix DiscordInstance issues
+- Analyze `RelaxAsync` BadRequest error.
+  - Status: Attempted fix by correcting `botType` logic in `RelaxAsync`. (2024-05-10)
+- Analyze `Account.CoreSize` concurrency update issue.
+  - Status: Provided analysis on potential causes related to `Account.CoreSize` value refresh or `AsyncParallelLock` behavior. Awaiting user feedback and further data. (2024-05-10)
+  - Added diagnostic logging for `MaxParallelism` and `Account.CoreSize` comparison. (2024-05-10)
+- Overall Status: In progress
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
@@ -44,6 +52,8 @@
 [2024-05-06] Fixed AI review processing to avoid modifying URLs and parameters which could break functionality.
 
 [2024-05-09] Investigated NullReferenceException in `TaskService.SubmitSeed`. Probable cause: The `TaskInfo` object passed to `SubmitSeed` is null, or one of its critical properties (e.g., `Id` for `jobId`, `Nonce`, or properties determining `BotType`) required for the seed operation is null. This can happen if the task retrieval in `TaskController.ImageSeed` fails or returns incomplete data. Recommended checking data retrieval logic for `TaskInfo` and ensuring all necessary fields are populated before or within `SubmitSeed` at line 1138 of `TaskService.cs`.
+
+[2024-05-10] Corrected `RelaxAsync` in `DiscordInstance.cs` to use the correct `_paramsMap` key based on `botType`, addressing a BadRequest error. The logic for selecting `relax` vs `relaxniji` parameters was inverted.
 
 # Project Guidelines
 [2024-05-04] For content moderation:

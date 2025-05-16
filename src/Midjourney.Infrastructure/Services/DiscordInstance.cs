@@ -271,6 +271,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                         Thread.Sleep(100);
                     }
 
+                    _logger.Information("频道 {@0} 准备检查信号量. 当前 Semaphore.MaxParallelism: {@1}, 当前 Account.CoreSize (from property): {@2}", Account.ChannelId, _semaphoreSlimLock.MaxParallelism, Account.CoreSize);
                     // 如果并发数修改，判断信号最大值是否为 Account.CoreSize
                     while (_semaphoreSlimLock.MaxParallelism != Account.CoreSize)
                     {
@@ -1874,7 +1875,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 return Message.Success("忽略提交，未开启 mj");
             }
 
-            var json = botType == EBotType.NIJI_JOURNEY ? _paramsMap["relax"] : _paramsMap["relaxniji"];
+            var json = botType == EBotType.MID_JOURNEY ? _paramsMap["relax"] : _paramsMap["relaxniji"];
             var paramsStr = ReplaceInteractionParams(json, nonce);
             var obj = JObject.Parse(paramsStr);
             paramsStr = obj.ToString();
