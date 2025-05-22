@@ -756,8 +756,6 @@ namespace Midjourney.API.Controllers
                 task.Action = TaskAction.ACTION;
             }
 
-            NewTaskDoFilter(task, actionDTO.AccountFilter);
-
             return Ok(_taskService.SubmitAction(task, actionDTO));
         }
 
