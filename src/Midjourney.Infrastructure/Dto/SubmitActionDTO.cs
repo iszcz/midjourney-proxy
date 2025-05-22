@@ -42,5 +42,10 @@ namespace Midjourney.Infrastructure.Dto
         /// </summary>
         [SwaggerSchema("MJ::JOB::upsample::2::3dbbd469-36af-4a0f-8f02-df6c579e7011")]
         public string CustomId { get; set; }
+
+        /// <summary>
+        /// 账号过滤
+        /// </summary>
+        public AccountFilter AccountFilter { get; set; }
     }
 }
