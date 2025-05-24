@@ -341,6 +341,11 @@ namespace Midjourney.Infrastructure.Models
         public int? ImageWidth => Width;
 
         /// <summary>
+        /// 是否已经进行过AI审核重试（用于Banned prompt detected错误处理）
+        /// </summary>
+        public bool HasAIReviewRetried { get; set; } = false;
+
+        /// <summary>
         /// 启动任务。
         /// </summary>
         public void Start()

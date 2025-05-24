@@ -514,25 +514,15 @@ namespace Midjourney.Infrastructure.Services
             // 验证实例是否符合速度模式过滤条件
             if (task.AccountFilter?.Modes?.Count > 0)
             {
-                // 如果指定了速度模式过滤，检查实例的当前模式和允许模式
-                bool modeMatches = false;
-                
-                // 检查实例当前模式是否在过滤列表中
-                if (discordInstance.Account.Mode != null && task.AccountFilter.Modes.Contains(discordInstance.Account.Mode.Value))
-                {
-                    modeMatches = true;
-                }
-                
                 // 检查实例允许的模式是否与过滤模式有交集
-                if (!modeMatches && discordInstance.Account.AllowModes?.Count > 0)
+                if (discordInstance.Account.AllowModes?.Count > 0)
                 {
-                    modeMatches = discordInstance.Account.AllowModes.Any(allowedMode => task.AccountFilter.Modes.Contains(allowedMode));
+                    if (!discordInstance.Account.AllowModes.Any(allowedMode => task.AccountFilter.Modes.Contains(allowedMode)))
+                    {
+                        return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
+                    }
                 }
-                
-                if (!modeMatches)
-                {
-                    return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
-                }
+
             }
             
             if (!discordInstance.IsIdleQueue)

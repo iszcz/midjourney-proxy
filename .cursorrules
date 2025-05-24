@@ -34,6 +34,36 @@
   - Added diagnostic logging for `MaxParallelism` and `Account.CoreSize` comparison. (2024-05-10)
 - Overall Status: In progress
 
+[2024-12-19] Task: Add AI review retry for banned prompt detected errors
+- ✅ Add HasAIReviewRetried property to TaskInfo model
+- ✅ Modify BotMessageListener to support AI review services dependency injection
+- ✅ Implement TryAIReviewRetry method in BotMessageListener
+- ✅ Add AI review retry logic for "Banned prompt detected" errors
+- ✅ Create retry task with AI-reviewed prompt
+- ✅ Update DiscordAccountHelper to pass AI review service to BotMessageListener
+- Task completed: Added automatic AI review retry when encountering banned prompt errors
+
+[2024-12-19] Task: Improve AI review retry flow with state synchronization
+- ✅ Add AIReviewRetryTaskId property to TaskInfo model for tracking retry tasks
+- ✅ Implement state synchronization mechanism between original and retry tasks
+- ✅ Add MonitorRetryTaskProgress method for real-time progress tracking
+- ✅ Ensure original task releases concurrent resources properly
+- ✅ Add SubmitRetryTaskWithSync method for coordinated retry submission
+- ✅ Implement timeout handling and error recovery for retry tasks
+- Task completed: Enhanced AI review retry to maintain consistent user experience with proper resource management
+
+[2024-12-19] Task: Simplify AI review retry flow by reusing original task ID
+- ✅ Remove AIReviewRetryTaskId property from TaskInfo model
+- ✅ Modify TryAIReviewRetry to directly update and resubmit original task
+- ✅ Remove complex state synchronization logic (CreateRetryTask, SubmitRetryTaskWithSync, MonitorRetryTaskProgress)
+- ✅ Add ResubmitTask method for direct task resubmission
+- ✅ Ensure original task ID remains consistent for user queries
+- ✅ Simplify error handling and resource management
+- ✅ Add ITaskStoreService dependency injection to BotMessageListener
+- ✅ Add task database saving in AI review retry process
+- ✅ Fix nonce property setup for task resubmission
+- Task completed: Simplified AI review retry flow to maintain original task ID while providing seamless user experience
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
@@ -101,3 +131,8 @@
 2. 提供详细推理
 3. 用中文呈现结论
 ``` 
+[2024-12-19] When implementing AI review retry for banned prompts, it's important to prevent infinite loops by marking tasks that have already been retried and only allowing one retry attempt per task.
+[2024-12-19] The BotMessageListener processes Discord WebSocket messages in JSON format and handles embed error messages like "Banned prompt detected" differently from regular bot message handlers that process SocketMessage objects.
+[2024-12-19] For AI review retry flow, maintaining user experience requires state synchronization between original and retry tasks. The original task should remain visible to users while the retry task executes in the background, with progress updates synchronized in real-time.
+[2024-12-19] When implementing task retry mechanisms, proper resource management is crucial: original tasks must release concurrent resources (e.g., removing from running task list) to prevent account capacity issues, while ensuring seamless state transitions and error recovery.
+[2024-12-19] For AI review retry systems, directly reusing the original task ID provides better user experience than creating new tasks. Users can continue querying with their original task ID and see the corrected results without needing to track multiple task IDs. This approach eliminates complex state synchronization requirements and reduces potential timeout issues. 

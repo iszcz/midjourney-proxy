@@ -53,6 +53,7 @@ namespace Midjourney.Infrastructure
         private readonly Dictionary<string, string> _paramsMap;
         private readonly IMemoryCache _memoryCache;
         private readonly ITaskService _taskService;
+        private readonly IPromptReviewService _promptReviewService;
 
         public DiscordAccountHelper(
             DiscordHelper discordHelper,
@@ -61,7 +62,8 @@ namespace Midjourney.Infrastructure
             INotifyService notifyService,
             IEnumerable<UserMessageHandler> userMessageHandlers,
             IMemoryCache memoryCache,
-            ITaskService taskService)
+            ITaskService taskService,
+            IPromptReviewService promptReviewService)
         {
             _properties = GlobalConfiguration.Setting;
             _discordHelper = discordHelper;
@@ -92,6 +94,7 @@ namespace Midjourney.Infrastructure
 
             _paramsMap = paramsMap;
             _taskService = taskService;
+            _promptReviewService = promptReviewService;
         }
 
         /// <summary>
@@ -132,7 +135,7 @@ namespace Midjourney.Infrastructure
             if (account.Enable == true)
             {
                 // bot 消息监听
-                var messageListener = new BotMessageListener(_discordHelper, webProxy);
+                var messageListener = new BotMessageListener(_discordHelper, webProxy, _promptReviewService, _taskService, _taskStoreService);
                 messageListener.Init(discordInstance, _botMessageHandlers, _userMessageHandlers);
                 await messageListener.StartAsync();
 

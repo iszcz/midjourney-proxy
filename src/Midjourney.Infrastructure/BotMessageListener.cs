@@ -31,6 +31,8 @@ using Midjourney.Infrastructure.Data;
 using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.Handle;
 using Midjourney.Infrastructure.LoadBalancer;
+using Midjourney.Infrastructure.Models;
+using Midjourney.Infrastructure.Services;
 using Midjourney.Infrastructure.Util;
 using RestSharp;
 using Serilog;
@@ -53,16 +55,27 @@ namespace Midjourney.Infrastructure
         private readonly WebProxy _webProxy;
         private readonly DiscordHelper _discordHelper;
         private readonly ProxyProperties _properties;
+        private readonly IPromptReviewService _promptReviewService;
+        private readonly ITaskService _taskService;
+        private readonly ITaskStoreService _taskStoreService;
 
         private DiscordInstance _discordInstance;
         private IEnumerable<BotMessageHandler> _botMessageHandlers;
         private IEnumerable<UserMessageHandler> _userMessageHandlers;
 
-        public BotMessageListener(DiscordHelper discordHelper, WebProxy webProxy = null)
+        public BotMessageListener(
+            DiscordHelper discordHelper, 
+            WebProxy webProxy = null,
+            IPromptReviewService promptReviewService = null,
+            ITaskService taskService = null,
+            ITaskStoreService taskStoreService = null)
         {
             _properties = GlobalConfiguration.Setting;
             _webProxy = webProxy;
             _discordHelper = discordHelper;
+            _promptReviewService = promptReviewService;
+            _taskService = taskService;
+            _taskStoreService = taskStoreService;
         }
 
         public void Init(
@@ -894,7 +907,7 @@ namespace Midjourney.Infrastructure
                                         "Invalid link", // 无效链接
                                         "Request cancelled due to output filters",
                                         "Queue full", // 执行中的队列已满
-                                        "Unlock your personalization", // 任务已排队
+                                        "Unlock your personalization to use V7", // 任务已排队
                                     };
 
                                     // 跳过的 title
@@ -1134,6 +1147,13 @@ namespace Midjourney.Infrastructure
                                                     if (!task.MessageIds.Contains(id))
                                                     {
                                                         task.MessageIds.Add(id);
+                                                    }
+
+                                                    // 检查是否为Banned prompt detected错误并尝试AI审核重试
+                                                    if (title == "Banned prompt detected" && TryAIReviewRetry(task, desc))
+                                                    {
+                                                        // AI审核重试成功，不执行task.Fail
+                                                        return;
                                                     }
 
                                                     task.Fail(error);
@@ -1395,6 +1415,198 @@ namespace Midjourney.Infrastructure
             }
 
             return data;
+        }
+
+        /// <summary>
+        /// 尝试AI审核重试，处理Banned prompt detected错误
+        /// </summary>
+        /// <param name="task">原始任务</param>
+        /// <param name="errorDescription">错误描述</param>
+        /// <returns>是否成功提交重试任务</returns>
+        private bool TryAIReviewRetry(TaskInfo task, string errorDescription)
+        {
+            // 检查必要的条件
+            if (_promptReviewService == null || _taskService == null)
+            {
+                _logger.Warning("TryAIReviewRetry: AI审核服务或任务服务未注入，TaskId: {TaskId}", task.Id);
+                return false;
+            }
+
+            // 检查是否已经进行过AI审核重试
+            if (task.HasAIReviewRetried)
+            {
+                _logger.Information("TryAIReviewRetry: 任务已进行过AI审核重试，直接失败，TaskId: {TaskId}", task.Id);
+                return false;
+            }
+
+            // 检查是否启用AI审核功能
+            if (!GlobalConfiguration.Setting.EnableAIReview)
+            {
+                _logger.Information("TryAIReviewRetry: AI审核功能未启用，TaskId: {TaskId}", task.Id);
+                return false;
+            }
+
+            // 标记已进行AI审核重试
+            task.HasAIReviewRetried = true;
+
+            try
+            {
+                _logger.Information("TryAIReviewRetry: 开始AI审核重试，TaskId: {TaskId}, 原始Prompt: {Prompt}", 
+                    task.Id, task.PromptEn);
+
+                // 对原始提示词进行AI审核
+                var originalPrompt = task.PromptEn;
+                if (string.IsNullOrWhiteSpace(originalPrompt))
+                {
+                    _logger.Warning("TryAIReviewRetry: 原始提示词为空，TaskId: {TaskId}", task.Id);
+                    return false;
+                }
+
+                // 分离URL、参数和文本内容（复用SubmitController中的逻辑）
+                string paramStr = "";
+                var paramMatcher = System.Text.RegularExpressions.Regex.Match(originalPrompt, "\\x20+--[a-z]+.*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (paramMatcher.Success)
+                {
+                    paramStr = paramMatcher.Value;
+                }
+                string promptWithoutParam = originalPrompt.Substring(0, originalPrompt.Length - paramStr.Length);
+
+                List<string> imageUrls = new List<string>();
+                var imageMatcher = System.Text.RegularExpressions.Regex.Matches(promptWithoutParam, "https?://[a-z0-9-_:@&?=+,.!/~*'%$]+\\x20+", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                foreach (System.Text.RegularExpressions.Match match in imageMatcher)
+                {
+                    imageUrls.Add(match.Value);
+                }
+
+                string textToReview = promptWithoutParam;
+                foreach (string imageUrl in imageUrls)
+                {
+                    textToReview = textToReview.Replace(imageUrl, "");
+                }
+
+                // 对文本部分进行AI审核
+                var reviewResult = _promptReviewService.ReviewPrompt(textToReview.Trim());
+
+                if (reviewResult.NeedModify && !string.IsNullOrWhiteSpace(reviewResult.Prompt))
+                {
+                    // 重新组合审核后的文本与URL和参数
+                    var newPromptEn = string.Concat(imageUrls) + reviewResult.Prompt + paramStr;
+
+                    _logger.Information("TryAIReviewRetry: AI审核完成，提示词已修改，TaskId: {TaskId}, 新Prompt: {NewPrompt}, 修改原因: {Reason}", 
+                        task.Id, newPromptEn, reviewResult.Reason);
+
+                    // 更新任务的提示词并重新提交
+                    task.PromptEn = newPromptEn;
+                    task.Status = TaskStatus.NOT_START;
+                    task.Progress = "";
+                    task.FailReason = null;
+                    task.Description = $"Retried: {reviewResult.Reason}";
+                    
+                    // 清理原有的Discord相关信息，准备重新提交
+                    task.MessageId = null;
+                    task.InteractionMetadataId = null;
+                    task.MessageIds.Clear();
+                    task.Nonce = SnowFlake.NextId(); // 生成新的nonce
+                    task.SetProperty(Constants.TASK_PROPERTY_NONCE, task.Nonce); // 同时设置到Properties中
+                    task.SubmitTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    task.StartTime = null;
+                    task.FinishTime = null;
+                    
+                    // 先将任务从运行列表移除，然后重新提交
+                    _discordInstance.RemoveRunningTask(task);
+                    
+                    // 保存任务状态到数据库
+                    if (_taskStoreService != null)
+                    {
+                        _taskStoreService.Save(task);
+                    }
+                    
+                    // 重新提交任务
+                    if (ResubmitTask(task))
+                    {
+                        _logger.Information("TryAIReviewRetry: AI审核重试任务重新提交成功，TaskId: {TaskId}", task.Id);
+                        return true;
+                    }
+                    else
+                    {
+                        // 重新提交失败，恢复失败状态
+                        task.Status = TaskStatus.FAILURE;
+                        task.Progress = "";
+                        task.FailReason = $"Retried failed: {errorDescription}";
+                        task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                        _logger.Warning("TryAIReviewRetry: AI审核重试任务重新提交失败，TaskId: {TaskId}", task.Id);
+                        
+                        // 保存失败状态到数据库
+                        if (_taskStoreService != null)
+                        {
+                            _taskStoreService.Save(task);
+                        }
+                        
+                        return false;
+                    }
+                }
+                else
+                {
+                    _logger.Information("TryAIReviewRetry: AI审核未修改提示词，任务失败，TaskId: {TaskId}", task.Id);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "TryAIReviewRetry: AI审核重试过程发生异常，TaskId: {TaskId}", task.Id);
+                // 恢复原任务失败状态
+                task.Status = TaskStatus.FAILURE;
+                task.Progress = "";
+                task.FailReason = $"Retried failed: {ex.Message}";
+                task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+                
+                // 保存异常状态到数据库
+                if (_taskStoreService != null)
+                {
+                    _taskStoreService.Save(task);
+                }
+                
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 重新提交任务
+        /// </summary>
+        /// <param name="task">要重新提交的任务</param>
+        /// <returns>是否提交成功</returns>
+        private bool ResubmitTask(TaskInfo task)
+        {
+            try
+            {
+                switch (task.Action)
+                {
+                    case TaskAction.IMAGINE:
+                        // 对于imagine任务，直接调用TaskService提交
+                        var result = _taskService.SubmitImagine(task, new List<DataUrl>(), _discordInstance);
+                        if (result.Code == ReturnCode.SUCCESS)
+                        {
+                            _logger.Information("ResubmitTask: 任务重新提交成功，TaskId: {TaskId}", task.Id);
+                            return true;
+                        }
+                        else
+                        {
+                            _logger.Warning("ResubmitTask: 任务重新提交失败，TaskId: {TaskId}, Error: {Error}", 
+                                task.Id, result.Description);
+                            return false;
+                        }
+                    
+                    default:
+                        _logger.Warning("ResubmitTask: 不支持的任务类型重新提交，Action: {Action}, TaskId: {TaskId}", 
+                            task.Action, task.Id);
+                        return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "ResubmitTask: 重新提交任务异常，TaskId: {TaskId}", task.Id);
+                return false;
+            }
         }
 
         public void Dispose()
