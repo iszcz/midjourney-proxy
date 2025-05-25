@@ -1446,8 +1446,9 @@ namespace Midjourney.Infrastructure
                 return false;
             }
 
-            // 标记已进行AI审核重试
+            // 标记已进行AI审核重试并立即清除失败信息
             task.HasAIReviewRetried = true;
+            task.FailReason = null;  // 立即清除失败原因
 
             try
             {
@@ -1459,6 +1460,10 @@ namespace Midjourney.Infrastructure
                 if (string.IsNullOrWhiteSpace(originalPrompt))
                 {
                     _logger.Warning("TryAIReviewRetry: 原始提示词为空，TaskId: {TaskId}", task.Id);
+                    // 恢复失败状态
+                    task.Status = TaskStatus.FAILURE;
+                    task.FailReason = "原始提示词为空，无法进行AI审核重试";
+                    task.Description = task.FailReason;
                     return false;
                 }
 
@@ -1499,7 +1504,7 @@ namespace Midjourney.Infrastructure
                     task.PromptEn = newPromptEn;
                     task.Status = TaskStatus.NOT_START;
                     task.Progress = "";
-                    task.FailReason = null;
+                    task.FailReason = null;  // 确保失败原因被清除
                     task.Description = $"Retried: {reviewResult.Reason}";
                     
                     // 清理原有的Discord相关信息，准备重新提交
@@ -1524,15 +1529,22 @@ namespace Midjourney.Infrastructure
                     // 重新提交任务
                     if (ResubmitTask(task))
                     {
+                        // 保存任务状态到数据库（ResubmitTask已更新Description）
+                        if (_taskStoreService != null)
+                        {
+                            _taskStoreService.Save(task);
+                        }
+                        
                         _logger.Information("TryAIReviewRetry: AI审核重试任务重新提交成功，TaskId: {TaskId}", task.Id);
                         return true;
                     }
                     else
                     {
-                        // 重新提交失败，恢复失败状态
+                        // 重新提交失败，设置新的失败状态
                         task.Status = TaskStatus.FAILURE;
                         task.Progress = "";
-                        task.FailReason = $"Retried failed: {errorDescription}";
+                        task.FailReason = $"AI审核重试失败: {errorDescription}";
+                        task.Description = task.FailReason;
                         task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
                         _logger.Warning("TryAIReviewRetry: AI审核重试任务重新提交失败，TaskId: {TaskId}", task.Id);
                         
@@ -1548,16 +1560,22 @@ namespace Midjourney.Infrastructure
                 else
                 {
                     _logger.Information("TryAIReviewRetry: AI审核未修改提示词，任务失败，TaskId: {TaskId}", task.Id);
+                    // 恢复失败状态，使用新的失败原因
+                    task.Status = TaskStatus.FAILURE;
+                    task.FailReason = $"AI审核未能修复违规内容: {errorDescription}";
+                    task.Description = task.FailReason;
+                    task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
                     return false;
                 }
             }
             catch (Exception ex)
             {
                 _logger.Error(ex, "TryAIReviewRetry: AI审核重试过程发生异常，TaskId: {TaskId}", task.Id);
-                // 恢复原任务失败状态
+                // 设置异常失败状态
                 task.Status = TaskStatus.FAILURE;
                 task.Progress = "";
-                task.FailReason = $"Retried failed: {ex.Message}";
+                task.FailReason = $"AI审核重试异常: {ex.Message}";
+                task.Description = task.FailReason;
                 task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
                 
                 // 保存异常状态到数据库
@@ -1584,14 +1602,26 @@ namespace Midjourney.Infrastructure
                     case TaskAction.IMAGINE:
                         // 对于imagine任务，直接调用TaskService提交
                         var result = _taskService.SubmitImagine(task, new List<DataUrl>(), _discordInstance);
-                        if (result.Code == ReturnCode.SUCCESS)
+                        if (result.Code == ReturnCode.SUCCESS || result.Code == ReturnCode.IN_QUEUE)
                         {
-                            _logger.Information("ResubmitTask: 任务重新提交成功，TaskId: {TaskId}", task.Id);
+                            if (result.Code == ReturnCode.IN_QUEUE)
+                            {
+                                // 获取排队信息
+                                var numberOfQueues = (int)(result.GetProperty("numberOfQueues") ?? 0);
+                                task.Description = $"AI审核重试成功，排队中，前面还有{numberOfQueues}个任务";
+                                _logger.Information("ResubmitTask: AI审核重试任务排队中，TaskId: {TaskId}, Queue: {NumberOfQueues}", 
+                                    task.Id, numberOfQueues);
+                            }
+                            else
+                            {
+                                task.Description = "AI审核重试成功，正在处理中";
+                                _logger.Information("ResubmitTask: AI审核重试任务重新提交成功，TaskId: {TaskId}", task.Id);
+                            }
                             return true;
                         }
                         else
                         {
-                            _logger.Warning("ResubmitTask: 任务重新提交失败，TaskId: {TaskId}, Error: {Error}", 
+                            _logger.Warning("ResubmitTask: AI审核重试任务重新提交失败，TaskId: {TaskId}, Error: {Error}", 
                                 task.Id, result.Description);
                             return false;
                         }

@@ -62,7 +62,8 @@
 - ✅ Add ITaskStoreService dependency injection to BotMessageListener
 - ✅ Add task database saving in AI review retry process
 - ✅ Fix nonce property setup for task resubmission
-- Task completed: Simplified AI review retry flow to maintain original task ID while providing seamless user experience
+- ✅ Improve failure reason handling in AI review retry process
+Task completed: Simplified AI review retry flow to maintain original task ID while providing seamless user experience
 
 [2024-12-19] Task: Fix account state management issues
 - ✅ Fix InvalidSession handling to directly disable account instead of attempting reconnection
@@ -71,6 +72,13 @@
 - ✅ Add delayed fallback mechanism to force-disable accounts stuck in abnormal states for more than 10 minutes
 - ✅ Improve NotifyWss to properly handle account enable state on successful connections
 - Task completed: Fixed critical account state management issues that could cause accounts to remain in "enabled but disconnected" state for extended periods
+
+[2024-12-19] Task: Improve AI review retry queue handling
+- ✅ Fix ResubmitTask to properly handle IN_QUEUE return code as success
+- ✅ Add queue information display when retry task needs to wait in queue
+- ✅ Improve task description updates to show queue status clearly
+- ✅ Add proper database saving after ResubmitTask updates task description
+- Task completed: Enhanced AI review retry to properly handle queue situations, providing clear feedback when retry tasks need to wait
 
 # Learned Knowledge
 ## Technical Knowledge
@@ -143,4 +151,6 @@
 [2024-12-19] The BotMessageListener processes Discord WebSocket messages in JSON format and handles embed error messages like "Banned prompt detected" differently from regular bot message handlers that process SocketMessage objects.
 [2024-12-19] For AI review retry flow, maintaining user experience requires state synchronization between original and retry tasks. The original task should remain visible to users while the retry task executes in the background, with progress updates synchronized in real-time.
 [2024-12-19] When implementing task retry mechanisms, proper resource management is crucial: original tasks must release concurrent resources (e.g., removing from running task list) to prevent account capacity issues, while ensuring seamless state transitions and error recovery.
-[2024-12-19] For AI review retry systems, directly reusing the original task ID provides better user experience than creating new tasks. Users can continue querying with their original task ID and see the corrected results without needing to track multiple task IDs. This approach eliminates complex state synchronization requirements and reduces potential timeout issues. 
+[2024-12-19] For AI review retry systems, directly reusing the original task ID provides better user experience than creating new tasks. Users can continue querying with their original task ID and see the corrected results without needing to track multiple task IDs. This approach eliminates complex state synchronization requirements and reduces potential timeout issues.
+[2024-12-19] In AI review retry processes, failure reasons must be cleared immediately when retry begins to prevent users from seeing confusing old error messages. The failure reason should be set to null at the start of retry, and only updated with new, relevant failure information if the retry itself fails.
+[2024-12-19] When implementing AI review retry functionality, it's crucial to handle queue scenarios properly. The IN_QUEUE return code should be treated as a successful submission, not a failure. Users should see clear feedback about queue status (e.g., "AI审核重试成功，排队中，前面还有X个任务") to understand their task is progressing normally through the system. 
