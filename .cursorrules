@@ -64,6 +64,14 @@
 - ✅ Fix nonce property setup for task resubmission
 - Task completed: Simplified AI review retry flow to maintain original task ID while providing seamless user experience
 
+[2024-12-19] Task: Fix account state management issues
+- ✅ Fix InvalidSession handling to directly disable account instead of attempting reconnection
+- ✅ Fix TryNewConnect lock competition issues by using account-specific lock names
+- ✅ Ensure accounts are disabled even when lock acquisition fails to prevent long-term stuck states
+- ✅ Add delayed fallback mechanism to force-disable accounts stuck in abnormal states for more than 10 minutes
+- ✅ Improve NotifyWss to properly handle account enable state on successful connections
+- Task completed: Fixed critical account state management issues that could cause accounts to remain in "enabled but disconnected" state for extended periods
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.

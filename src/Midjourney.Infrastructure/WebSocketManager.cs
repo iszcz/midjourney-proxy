@@ -647,7 +647,10 @@ namespace Midjourney.Infrastructure
                             _sequence = null;
                             _resumeGatewayUrl = null;
 
-                            HandleFailure(CLOSE_CODE_EXCEPTION, "无效授权，创建新的连接");
+                            // InvalidSession 表示会话无效，通常是由于Token过期或无效授权
+                            // 这种情况下应该直接禁用账号，而不是尝试重新连接
+                            _logger.Error("InvalidSession detected, disabling account {@0}", Account.ChannelId);
+                            DisableAccount("无效授权，创建新的连接");
                         }
                         break;
 
@@ -802,6 +805,26 @@ namespace Midjourney.Infrastructure
 
             Running = false;
 
+            // 启动一个延迟检查任务，防止账号长时间卡在中间状态
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    // 等待10分钟，如果账号仍然没有被正确处理（Enable仍然为true但Running为false），则强制禁用
+                    await Task.Delay(TimeSpan.FromMinutes(3));
+                    
+                    if (!_isDispose && Account?.Enable == true && !Running)
+                    {
+                        _logger.Warning("账号长时间处于异常状态，强制禁用 {@0}, 原因: {1}", Account.ChannelId, reason);
+                        DisableAccount($"长时间异常状态强制禁用: {reason}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "延迟检查任务异常 {@0}", Account.ChannelId);
+                }
+            });
+
             if (code >= 4000)
             {
                 _logger.Warning("用户无法重新连接， 由 {0}({1}) 关闭 {2}, 尝试新连接... ", code, reason, Account.ChannelId);
@@ -859,18 +882,20 @@ namespace Midjourney.Infrastructure
                 return;
             }
 
-            var isLock = LocalLock.TryLock("TryNewConnect", TimeSpan.FromSeconds(3), () =>
+            // 使用账号特定的锁名称，避免不同账号间的锁竞争
+            var lockKey = $"TryNewConnect_{Account.ChannelId}";
+            var isLock = LocalLock.TryLock(lockKey, TimeSpan.FromSeconds(10), () =>
             {
                 for (int i = 1; i <= CONNECT_RETRY_LIMIT; i++)
                 {
                     try
                     {
                         // 如果 5 分钟内失败次数超过限制，则禁用账号
-                        var ncKey = $"TryNewConnect_{Account.ChannelId}";
+                        var ncKey = $"TryNewConnect_Count_{Account.ChannelId}";
                         _memoryCache.TryGetValue(ncKey, out int count);
                         if (count > CONNECT_RETRY_LIMIT)
                         {
-                            _logger.Warning("新的连接失败次数超过限制，禁用账号");
+                            _logger.Warning("新的连接失败次数超过限制，禁用账号 {@0}", Account.ChannelId);
                             DisableAccount("新的连接失败次数超过限制，禁用账号");
                             return;
                         }
@@ -892,15 +917,16 @@ namespace Midjourney.Infrastructure
 
                 if (WebSocket == null || WebSocket.State != WebSocketState.Open)
                 {
-                    _logger.Error("由于无法重新连接，自动禁用账号");
-
+                    _logger.Error("由于无法重新连接，自动禁用账号 {@0}", Account.ChannelId);
                     DisableAccount("由于无法重新连接，自动禁用账号");
                 }
             });
 
             if (!isLock)
             {
-                _logger.Warning("新的连接作业正在执行中，禁止重复执行");
+                _logger.Warning("新的连接作业正在执行中，强制禁用账号以避免长时间卡住状态 {@0}", Account.ChannelId);
+                // 如果获取不到锁，直接禁用账号，避免长时间卡在中间状态
+                DisableAccount("连接处理冲突，强制禁用账号");
             }
         }
 
@@ -1109,6 +1135,16 @@ namespace Midjourney.Infrastructure
             if (!Account.Lock)
             {
                 Account.DisabledReason = reason;
+                
+                // 如果是成功状态，确保账号处于启用状态（如果之前被禁用但现在连接成功）
+                if (code == ReturnCode.SUCCESS)
+                {
+                    if (Account.Enable == false && string.IsNullOrWhiteSpace(reason))
+                    {
+                        Account.Enable = true;
+                        Account.DisabledReason = null;
+                    }
+                }
             }
 
             // 保存
