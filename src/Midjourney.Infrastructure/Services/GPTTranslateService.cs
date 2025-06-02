@@ -128,10 +128,24 @@ namespace Midjourney.Infrastructure.Services
 
         public bool ContainsChinese(string prompt)
         {
-            // 匹配基本汉字区、扩展A区和部分扩展B区
-            string chinesePattern = @"[\u4e00-\u9fa5\u3400-\u4DBF]";
+            bool hasLetters = false;
+            bool allEnglish = true;
 
-            return Regex.IsMatch(prompt, chinesePattern);
+            foreach (var v in prompt)
+            {
+                if (char.IsLetter(v))
+                {
+                    hasLetters = true;
+                    // 检查是否为非英文字母
+                    if (!((v >= 'a' && v <= 'z') || (v >= 'A' && v <= 'Z')))
+                    {
+                        allEnglish = false;
+                        return true; // 只要发现一个非英文字母，立即返回需要翻译
+                    }
+                }
+            }
+
+            return hasLetters && !allEnglish;
         }
     }
 }
