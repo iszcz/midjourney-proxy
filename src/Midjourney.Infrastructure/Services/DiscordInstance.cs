@@ -81,9 +81,14 @@ namespace Midjourney.Infrastructure.LoadBalancer
         private readonly ITaskService _taskService;
 
         /// <summary>
-        /// 当前队列任务
+        /// 任务队列
         /// </summary>
         private ConcurrentQueue<(TaskInfo, Func<Task<Message>>)> _queueTasks = [];
+
+        /// <summary>
+        /// 优先任务队列（如放大任务）
+        /// </summary>
+        private ConcurrentQueue<(TaskInfo, Func<Task<Message>>)> _priorityQueueTasks = [];
 
         private DiscordAccount _account;
 
@@ -232,12 +237,33 @@ namespace Midjourney.Infrastructure.LoadBalancer
         /// 获取队列中的任务列表。
         /// </summary>
         /// <returns>队列中的任务列表</returns>
-        public List<TaskInfo> GetQueueTasks() => new List<TaskInfo>(_queueTasks.Select(c => c.Item1) ?? []);
+        public List<TaskInfo> GetQueueTasks() 
+        {
+            var allTasks = new List<TaskInfo>();
+            allTasks.AddRange(_priorityQueueTasks.Select(c => c.Item1) ?? []);
+            allTasks.AddRange(_queueTasks.Select(c => c.Item1) ?? []);
+            return allTasks;
+        }
 
         /// <summary>
         /// 是否存在空闲队列，即：队列是否已满，是否可加入新的任务
         /// </summary>
         public bool IsIdleQueue => Account.QueueSize <= 0 || _queueTasks.Count < Account.QueueSize;
+
+        /// <summary>
+        /// 检查是否可以提交任务（优先任务无视队列限制）
+        /// </summary>
+        /// <param name="isPriority">是否为优先任务</param>
+        /// <returns>是否可以提交</returns>
+        public bool CanSubmitTask(bool isPriority = false)
+        {
+            if (isPriority)
+            {
+                // 优先任务无视队列限制
+                return true;
+            }
+            return Account.QueueSize <= 0 || _queueTasks.Count < Account.QueueSize;
+        }
 
         /// <summary>
         /// 后台服务执行任务
@@ -259,7 +285,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 try
                 {
                     // 如果队列中没有任务，则等待信号通知
-                    if (_queueTasks.Count <= 0)
+                    if (_queueTasks.Count <= 0 && _priorityQueueTasks.Count <= 0)
                     {
                         _mre.WaitOne();
                     }
@@ -286,59 +312,84 @@ namespace Midjourney.Infrastructure.LoadBalancer
                         Thread.Sleep(500);
                     }
 
-                    while (_queueTasks.TryPeek(out var info))
+                    // 优先处理优先队列，每次循环都先检查优先队列
+                    var taskToExecute = (TaskInfo: (TaskInfo)null, Handler: (Func<Task<Message>>)null);
+                    bool isFromPriorityQueue = false;
+                    
+                    // 首先尝试从优先队列获取任务
+                    if (_priorityQueueTasks.TryPeek(out var priorityInfo))
                     {
                         // 判断是否还有资源可用
                         if (_semaphoreSlimLock.IsLockAvailable())
                         {
-                            var preSleep = Account.Interval;
-                            if (preSleep <= 1.2m)
+                            if (_priorityQueueTasks.TryDequeue(out priorityInfo))
                             {
-                                preSleep = 1.2m;
+                                taskToExecute = priorityInfo;
+                                isFromPriorityQueue = true;
                             }
-
-                            // 提交任务前间隔
-                            // 当一个作业完成后，是否先等待一段时间再提交下一个作业
-                            Thread.Sleep((int)(preSleep * 1000));
-
-                            // 从队列中移除任务，并开始执行
+                        }
+                    }
+                    
+                    // 如果优先队列没有任务或没有可用资源，则从普通队列获取
+                    if (taskToExecute.TaskInfo == null && _queueTasks.TryPeek(out var info))
+                    {
+                        // 判断是否还有资源可用
+                        if (_semaphoreSlimLock.IsLockAvailable())
+                        {
                             if (_queueTasks.TryDequeue(out info))
                             {
-                                _taskFutureMap[info.Item1.Id] = ExecuteTaskAsync(info.Item1, info.Item2);
-
-                                // 计算执行后的间隔
-                                var min = Account.AfterIntervalMin;
-                                var max = Account.AfterIntervalMax;
-
-                                // 计算 min ~ max随机数
-                                var afterInterval = 1200;
-                                if (max > min && min >= 1.2m)
-                                {
-                                    afterInterval = new Random().Next((int)(min * 1000), (int)(max * 1000));
-                                }
-                                else if (max == min && min >= 1.2m)
-                                {
-                                    afterInterval = (int)(min * 1000);
-                                }
-
-                                // 如果是图生文操作
-                                if (info.Item1.GetProperty<string>(Constants.TASK_PROPERTY_CUSTOM_ID, default)?.Contains("PicReader") == true)
-                                {
-                                    // 批量任务操作提交间隔 1.2s + 6.8s
-                                    Thread.Sleep(afterInterval + 6800);
-                                }
-                                else
-                                {
-                                    // 队列提交间隔
-                                    Thread.Sleep(afterInterval);
-                                }
+                                taskToExecute = info;
+                                isFromPriorityQueue = false;
                             }
+                        }
+                    }
+                    
+                    // 如果有任务需要执行
+                    if (taskToExecute.TaskInfo != null)
+                    {
+                        var preSleep = Account.Interval;
+                        if (preSleep <= 1.2m)
+                        {
+                            preSleep = 1.2m;
+                        }
+
+                        // 提交任务前间隔
+                        Thread.Sleep((int)(preSleep * 1000));
+
+                        // 开始执行任务
+                        _taskFutureMap[taskToExecute.TaskInfo.Id] = ExecuteTaskAsync(taskToExecute.TaskInfo, taskToExecute.Handler);
+
+                        // 计算执行后的间隔
+                        var min = Account.AfterIntervalMin;
+                        var max = Account.AfterIntervalMax;
+
+                        // 计算 min ~ max随机数
+                        var afterInterval = 1200;
+                        if (max > min && min >= 1.2m)
+                        {
+                            afterInterval = new Random().Next((int)(min * 1000), (int)(max * 1000));
+                        }
+                        else if (max == min && min >= 1.2m)
+                        {
+                            afterInterval = (int)(min * 1000);
+                        }
+
+                        // 如果是图生文操作
+                        if (taskToExecute.TaskInfo.GetProperty<string>(Constants.TASK_PROPERTY_CUSTOM_ID, default)?.Contains("PicReader") == true)
+                        {
+                            // 批量任务操作提交间隔 1.2s + 6.8s
+                            Thread.Sleep(afterInterval + 6800);
                         }
                         else
                         {
-                            // 如果没有可用资源，等待
-                            Thread.Sleep(100);
+                            // 队列提交间隔
+                            Thread.Sleep(afterInterval);
                         }
+                    }
+                    else
+                    {
+                        // 如果没有任务或没有可用资源，等待一下
+                        Thread.Sleep(100);
                     }
 
                     // 重新设置信号
@@ -400,20 +451,27 @@ namespace Midjourney.Infrastructure.LoadBalancer
             _taskFutureMap.TryRemove(task.Id, out _);
             SaveAndNotify(task);
 
-            // 判断 _queueTasks 队列中是否存在指定任务，如果有则移除
-            //if (_queueTasks.Any(c => c.Item1.Id == task.Id))
-            //{
-            //    _queueTasks = new ConcurrentQueue<(TaskInfo, Func<Task<Message>>)>(_queueTasks.Where(c => c.Item1.Id != task.Id));
-            //}
+            // 从优先队列中移除任务
+            if (_priorityQueueTasks.Any(c => c.Item1.Id == task.Id))
+            {
+                var tempPriorityQueue = new ConcurrentQueue<(TaskInfo, Func<Task<Message>>)>();
 
-            // 判断 _queueTasks 队列中是否存在指定任务，如果有则移除
-            // 使用线程安全的方式移除
+                while (_priorityQueueTasks.TryDequeue(out var item))
+                {
+                    if (item.Item1.Id != task.Id)
+                    {
+                        tempPriorityQueue.Enqueue(item);
+                    }
+                }
+
+                _priorityQueueTasks = tempPriorityQueue;
+            }
+
+            // 从普通队列中移除任务
             if (_queueTasks.Any(c => c.Item1.Id == task.Id))
             {
-                // 移除 _queueTasks 队列中指定的任务
                 var tempQueue = new ConcurrentQueue<(TaskInfo, Func<Task<Message>>)>();
 
-                // 将不需要移除的元素加入到临时队列中
                 while (_queueTasks.TryDequeue(out var item))
                 {
                     if (item.Item1.Id != task.Id)
@@ -422,7 +480,6 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     }
                 }
 
-                // 交换队列引用
                 _queueTasks = tempQueue;
             }
         }
@@ -441,9 +498,14 @@ namespace Midjourney.Infrastructure.LoadBalancer
         /// <returns>任务提交结果</returns>
         public SubmitResultVO SubmitTaskAsync(TaskInfo info, Func<Task<Message>> discordSubmit)
         {
+            // 检查是否为优先任务
+            bool isPriority = info.IsPriority;
+            
             // 在任务提交时，前面的的任务数量
-            var currentWaitNumbers = _queueTasks.Count;
-            if (Account.QueueSize > 0 && currentWaitNumbers >= Account.QueueSize)
+            var currentWaitNumbers = isPriority ? _priorityQueueTasks.Count : _queueTasks.Count;
+            
+            // 优先任务无视队列大小限制
+            if (!isPriority && Account.QueueSize > 0 && currentWaitNumbers >= Account.QueueSize)
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试")
                     .SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, ChannelId);
@@ -454,19 +516,31 @@ namespace Midjourney.Infrastructure.LoadBalancer
 
             try
             {
-                _queueTasks.Enqueue((info, discordSubmit));
+                // 根据优先级将任务加入相应的队列
+                if (isPriority)
+                {
+                    _priorityQueueTasks.Enqueue((info, discordSubmit));
+                }
+                else
+                {
+                    _queueTasks.Enqueue((info, discordSubmit));
+                }
 
                 // 通知后台服务有新的任务
                 _mre.Set();
 
                 if (currentWaitNumbers == 0)
                 {
-                    return SubmitResultVO.Of(ReturnCode.SUCCESS, "提交成功", info.Id)
+                    string message = isPriority ? "优先任务提交成功" : "提交成功";
+                    return SubmitResultVO.Of(ReturnCode.SUCCESS, message, info.Id)
                         .SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, ChannelId);
                 }
                 else
                 {
-                    return SubmitResultVO.Of(ReturnCode.IN_QUEUE, $"排队中，前面还有{currentWaitNumbers}个任务", info.Id)
+                    string message = isPriority ? 
+                        $"优先队列排队中，前面还有{currentWaitNumbers}个任务" : 
+                        $"排队中，前面还有{currentWaitNumbers}个任务";
+                    return SubmitResultVO.Of(ReturnCode.IN_QUEUE, message, info.Id)
                         .SetProperty("numberOfQueues", currentWaitNumbers)
                         .SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, ChannelId);
                 }

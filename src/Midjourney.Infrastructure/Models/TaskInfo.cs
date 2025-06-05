@@ -346,6 +346,11 @@ namespace Midjourney.Infrastructure.Models
         public bool HasAIReviewRetried { get; set; } = false;
 
         /// <summary>
+        /// 是否为优先任务（如放大任务）
+        /// </summary>
+        public bool IsPriority { get; set; } = false;
+
+        /// <summary>
         /// 启动任务。
         /// </summary>
         public void Start()

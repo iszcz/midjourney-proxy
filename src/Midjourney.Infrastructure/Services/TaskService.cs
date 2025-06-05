@@ -267,7 +267,7 @@ namespace Midjourney.Infrastructure.Services
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
             }
-            if (!discordInstance.IsIdleQueue)
+            if (!discordInstance.CanSubmitTask(task.IsPriority))
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
@@ -525,7 +525,7 @@ namespace Midjourney.Infrastructure.Services
 
             }
             
-            if (!discordInstance.IsIdleQueue)
+            if (!discordInstance.CanSubmitTask(task.IsPriority))
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }

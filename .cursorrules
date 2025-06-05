@@ -80,6 +80,21 @@ Task completed: Simplified AI review retry flow to maintain original task ID whi
 - ✅ Add proper database saving after ResubmitTask updates task description
 - Task completed: Enhanced AI review retry to properly handle queue situations, providing clear feedback when retry tasks need to wait
 
+[2024-12-19] Task: Implement priority queue for upscale tasks
+- ✅ Add IsPriority property to TaskInfo model to mark priority tasks
+- ✅ Add priority queue (_priorityQueueTasks) alongside regular queue in DiscordInstance
+- ✅ Modify SubmitTaskAsync to support priority queue submission
+- ✅ Update Running method to process priority queue first before regular queue
+- ✅ Update Action endpoint in SubmitController to mark upscale tasks as priority
+- ✅ Update IsIdleQueue logic to consider both queues
+- ✅ Ensure upscale tasks bypass queue size limits and get priority processing
+- ✅ Update TaskService methods to use CanSubmitTask for priority tasks
+- ✅ Update ExitTask method to remove tasks from both queues
+- ✅ Fix Change method to mark UPSCALE tasks as priority
+- ✅ Fix Action method to mark MJ::JOB::upsample_ tasks as priority
+- ✅ Optimize Running method to check priority queue first in each iteration
+Task completed: Implemented priority queue system where upscale tasks are processed with higher priority and can bypass normal queue size limits
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
@@ -153,4 +168,7 @@ Task completed: Simplified AI review retry flow to maintain original task ID whi
 [2024-12-19] When implementing task retry mechanisms, proper resource management is crucial: original tasks must release concurrent resources (e.g., removing from running task list) to prevent account capacity issues, while ensuring seamless state transitions and error recovery.
 [2024-12-19] For AI review retry systems, directly reusing the original task ID provides better user experience than creating new tasks. Users can continue querying with their original task ID and see the corrected results without needing to track multiple task IDs. This approach eliminates complex state synchronization requirements and reduces potential timeout issues.
 [2024-12-19] In AI review retry processes, failure reasons must be cleared immediately when retry begins to prevent users from seeing confusing old error messages. The failure reason should be set to null at the start of retry, and only updated with new, relevant failure information if the retry itself fails.
-[2024-12-19] When implementing AI review retry functionality, it's crucial to handle queue scenarios properly. The IN_QUEUE return code should be treated as a successful submission, not a failure. Users should see clear feedback about queue status (e.g., "AI审核重试成功，排队中，前面还有X个任务") to understand their task is progressing normally through the system. 
+[2024-12-19] When implementing AI review retry functionality, it's crucial to handle queue scenarios properly. The IN_QUEUE return code should be treated as a successful submission, not a failure. Users should see clear feedback about queue status (e.g., "AI审核重试成功，排队中，前面还有X个任务") to understand their task is progressing normally through the system.
+[2024-12-19] When implementing priority queues for task processing, it's important to ensure all entry points for priority tasks are properly marked. Multiple controller methods (Change, Action) may handle the same task type (UPSCALE), so priority flags must be set consistently across all paths.
+[2024-12-19] Priority queue processing logic should check priority tasks first in each iteration rather than exhaustively processing all priority tasks before moving to regular tasks. This prevents resource starvation and ensures fair processing when both priority and regular tasks compete for limited resources.
+[2024-12-19] Upscale-related tasks come in different forms: MJ::JOB::upsample:: (basic upscale) and MJ::JOB::upsample_ (high-quality upscale variants like 2x subtle/creative). All upscale variations should be treated as priority tasks for consistent user experience. 

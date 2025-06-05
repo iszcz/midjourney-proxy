@@ -429,6 +429,12 @@ namespace Midjourney.API.Controllers
             task.Prompt = targetTask.Prompt;
             task.PromptEn = targetTask.PromptEn;
 
+            // 设置放大任务为优先任务
+            if (changeDTO.Action == TaskAction.UPSCALE)
+            {
+                task.IsPriority = true;
+            }
+
             task.SetProperty(Constants.TASK_PROPERTY_FINAL_PROMPT, targetTask.GetProperty<string>(Constants.TASK_PROPERTY_FINAL_PROMPT, default));
             task.SetProperty(Constants.TASK_PROPERTY_PROGRESS_MESSAGE_ID, targetTask.GetProperty<string>(Constants.TASK_PROPERTY_MESSAGE_ID, default));
             task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, targetTask.GetProperty<string>(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, default));
@@ -643,6 +649,7 @@ namespace Midjourney.API.Controllers
             if (actionDTO.CustomId.StartsWith("MJ::JOB::upsample::"))
             {
                 task.Action = TaskAction.UPSCALE;
+                task.IsPriority = true; // 设置放大任务为优先任务
 
                 // 在进行 U 时，记录目标图片的 U 的 customId
                 task.SetProperty(Constants.TASK_PROPERTY_REMIX_U_CUSTOM_ID, actionDTO.CustomId);
@@ -689,6 +696,7 @@ namespace Midjourney.API.Controllers
             else if (actionDTO.CustomId.StartsWith("MJ::JOB::upsample_"))
             {
                 task.Action = TaskAction.ACTION;
+                task.IsPriority = true; // 设置高清放大任务为优先任务
             }
             // 自定义变焦
             // "MJ::CustomZoom::439f8670-52e8-4f57-afaa-fa08f6d6c751"
