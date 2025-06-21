@@ -351,6 +351,12 @@ namespace Midjourney.Infrastructure.Models
         public bool IsPriority { get; set; } = false;
 
         /// <summary>
+        /// 图片URL数组（用于IMAGINE任务完成时存储4张图片的URL）
+        /// </summary>
+        [JsonMap]
+        public List<ImgUrlInfo> ImgUrls { get; set; } = new List<ImgUrlInfo>();
+
+        /// <summary>
         /// 启动任务。
         /// </summary>
         public void Start()
@@ -403,6 +409,19 @@ namespace Midjourney.Infrastructure.Models
             FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             Status = TaskStatus.SUCCESS;
             Progress = "100%";
+
+            // 为IMAGINE类型任务生成图片URL数组
+            if (Action == TaskAction.IMAGINE && !string.IsNullOrWhiteSpace(JobId))
+            {
+                ImgUrls = new List<ImgUrlInfo>();
+                for (int i = 0; i < 4; i++)
+                {
+                    ImgUrls.Add(new ImgUrlInfo
+                    {
+                        Url = $"https://cdn.midjourney.com/{JobId}/0_{i}.png"
+                    });
+                }
+            }
 
             UpdateUserDrawCount();
         }
@@ -491,5 +510,16 @@ namespace Midjourney.Infrastructure.Models
                 Log.Error(ex, "更新用户绘图次数失败");
             }
         }
+    }
+
+    /// <summary>
+    /// 图片URL信息类
+    /// </summary>
+    public class ImgUrlInfo
+    {
+        /// <summary>
+        /// 图片URL
+        /// </summary>
+        public string Url { get; set; }
     }
 }
