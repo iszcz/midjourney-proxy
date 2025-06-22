@@ -354,7 +354,7 @@ namespace Midjourney.Infrastructure.Models
         /// 图片URL数组（用于IMAGINE任务完成时存储4张图片的URL）
         /// </summary>
         [JsonMap]
-        public List<ImgUrlInfo> ImgUrls { get; set; } = new List<ImgUrlInfo>();
+        public List<ImgUrlInfo> ImageUrls { get; set; } = new List<ImgUrlInfo>();
 
         /// <summary>
         /// 启动任务。
@@ -413,10 +413,10 @@ namespace Midjourney.Infrastructure.Models
             // 为IMAGINE类型任务生成图片URL数组
             if (Action == TaskAction.IMAGINE && !string.IsNullOrWhiteSpace(JobId))
             {
-                ImgUrls = new List<ImgUrlInfo>();
+                ImageUrls = new List<ImgUrlInfo>();
                 for (int i = 0; i < 4; i++)
                 {
-                    ImgUrls.Add(new ImgUrlInfo
+                    ImageUrls.Add(new ImgUrlInfo
                     {
                         Url = $"https://cdn.midjourney.com/{JobId}/0_{i}.png"
                     });

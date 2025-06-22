@@ -95,13 +95,13 @@ Task completed: Simplified AI review retry flow to maintain original task ID whi
 - ✅ Optimize Running method to check priority queue first in each iteration
 Task completed: Implemented priority queue system where upscale tasks are processed with higher priority and can bypass normal queue size limits
 
-[2024-12-19] Task: Add imgUrls field to TaskInfo for IMAGINE tasks
-- ✅ Add ImgUrls property to TaskInfo model with List<ImgUrlInfo> type
+[2024-12-19] Task: Add imageUrls field to TaskInfo for IMAGINE tasks
+- ✅ Add ImageUrls property to TaskInfo model with List<ImgUrlInfo> type
 - ✅ Create ImgUrlInfo class with Url property
 - ✅ Add logic in TaskInfo.Success() method to generate 4 image URLs when action is IMAGINE and JobId exists
 - ✅ Use URL format: https://cdn.midjourney.com/{jobId}/0_{index}.png
-- ✅ Ensure imgUrls are saved to database and included in callbacks and queries automatically
-Task completed: Added imgUrls field to TaskInfo for IMAGINE tasks to provide easy access to individual image URLs
+- ✅ Ensure imageUrls are saved to database and included in callbacks and queries automatically
+Task completed: Added imageUrls field to TaskInfo for IMAGINE tasks to provide easy access to individual image URLs
 
 # Learned Knowledge
 ## Technical Knowledge
