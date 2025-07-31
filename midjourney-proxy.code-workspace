@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../midjourney-proxy-webui"
+		}
+	],
+	"settings": {}
+}
