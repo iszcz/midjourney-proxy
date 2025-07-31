@@ -1080,30 +1080,6 @@ namespace Midjourney.Infrastructure.LoadBalancer
             return await PostJsonAndCheckStatusAsync(paramsStr);
         }
 
-        /// <summary>
-        /// 视频
-        /// </summary>
-        /// <param name="messageId"></param>
-        /// <param name="customId"></param>
-        /// <param name="prompt"></param>
-        /// <param name="nonce"></param>
-        /// <returns></returns>
-        public async Task<Message> AnimateAsync(TaskInfo info, string messageId, string customId, string prompt, string nonce)
-        {
-            customId = customId.Replace("MJ::JOB::animate", "MJ::AnimateModal::");
-            prompt = GetPrompt(prompt, info);
-
-            string paramsStr = ReplaceInteractionParams(_paramsMap["animate"], nonce, info.RealBotType ?? info.BotType)
-                .Replace("$message_id", messageId);
-
-            var obj = JObject.Parse(paramsStr);
-
-            obj["data"]["custom_id"] = customId;
-            obj["data"]["components"][0]["components"][0]["value"] = prompt;
-
-            paramsStr = obj.ToString();
-            return await PostJsonAndCheckStatusAsync(paramsStr);
-        }
 
         /// <summary>
         /// 图生文 - 生图

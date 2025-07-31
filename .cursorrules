@@ -110,6 +110,30 @@ Task completed: Added imageUrls field to TaskInfo for IMAGINE tasks to provide e
 - ✅ Add defensive check to prevent double conversion and handle cases where custom_id doesn't contain underscore
 Task completed: Fixed AnimateModal BadRequest error by improving custom_id format detection and conversion logic
 
+[2024-12-21] Task: Fix missing animate.json parameter file
+- ✅ Analyze KeyNotFoundException for 'animate' key in _paramsMap dictionary
+- ✅ Identify missing animate.json file in Resources/ApiParams directory
+- ✅ Create animate.json parameter file based on zoom.json and remix.json format
+- ✅ Add animate.json as EmbeddedResource in Midjourney.Infrastructure.csproj
+- ✅ Ensure proper parameter mapping initialization for AnimateAsync method
+Task completed: Fixed missing animate parameter configuration file causing runtime KeyNotFoundException
+
+[2024-12-21] Task: Extend ImageUrls generation for tasks with upsample buttons
+- ✅ Analyze existing ImageUrls logic in TaskInfo.Success() method
+- ✅ Identify current logic only generates ImageUrls for IMAGINE type tasks
+- ✅ Extend logic to also generate ImageUrls when buttons contain "MJ::JOB::upsample::" pattern
+- ✅ Maintain existing IMAGINE type task functionality while adding new upsample button detection
+Task completed: Enhanced ImageUrls generation to support tasks with upsample buttons, providing consistent image URL access across different task types
+
+[2024-12-21] Task: Add VideoUrls support for VIDEO and VIDEO_EXTEND tasks
+- ✅ Add VideoUrls property to TaskInfo model with List<VideoUrlInfo> type
+- ✅ Create VideoUrlInfo class with Url and ImageUrl properties for video-image synchronization
+- ✅ Add logic in TaskInfo.Success() method to generate video URLs for VIDEO and VIDEO_EXTEND tasks
+- ✅ Use URL format: https://cdn.midjourney.com/video/{jobId}/0_{index}.mp4
+- ✅ Implement synchronization between VideoUrls and ImageUrls (videoUrl=imageUrl)
+- ✅ Ensure VideoUrls are saved to database and included in callbacks and queries automatically
+Task completed: Added VideoUrls field to TaskInfo for VIDEO tasks to provide easy access to video URLs while maintaining image URL synchronization
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
@@ -132,6 +156,8 @@ Task completed: Fixed AnimateModal BadRequest error by improving custom_id forma
 [2024-05-10] Corrected `RelaxAsync` in `DiscordInstance.cs` to use the correct `_paramsMap` key based on `botType`, addressing a BadRequest error. The logic for selecting `relax` vs `relaxniji` parameters was inverted.
 
 [2024-12-21] Fixed AnimateModal BadRequest error in TaskService.cs. The custom_id conversion logic assumed input format was always "MJ::JOB::animate_high::..." but sometimes received already converted format "MJ::AnimateModal::...". Added format detection to prevent double conversion and handle cases where action type doesn't contain underscore. This prevents "parts[2].Split('_')[1]" from throwing IndexOutOfRangeException when parts[2] is already "high" instead of "animate_high".
+
+[2024-12-21] Fixed KeyNotFoundException for missing 'animate' parameter in DiscordInstance.cs. The issue occurred because animate.json parameter file was missing from Resources/ApiParams directory and not included as EmbeddedResource in the project file. Created animate.json with proper modal structure based on existing zoom.json and remix.json formats, and added it to Midjourney.Infrastructure.csproj as EmbeddedResource. This ensures AnimateAsync method can properly access Discord API parameters for video animation operations.
 
 # Project Guidelines
 [2024-05-04] For content moderation:
@@ -192,4 +218,10 @@ Task completed: Fixed AnimateModal BadRequest error by improving custom_id forma
 
 [2024-12-19] For TaskInfo model extensions, new fields should use JsonMap attribute for complex objects and be initialized with default values in the constructor or property declaration to ensure proper serialization and database storage.
 
-[2024-12-21] When processing custom_id transformations for Discord interactions, always validate the input format before attempting string manipulations like Split(). Different entry points may provide custom_ids in various stages of transformation (original vs converted), so defensive coding with format detection prevents runtime errors. For VIDEO/animate operations, custom_ids can be in format "MJ::JOB::animate_high::..." (original) or "MJ::AnimateModal::..." (already converted). 
+[2024-12-21] When processing custom_id transformations for Discord interactions, always validate the input format before attempting string manipulations like Split(). Different entry points may provide custom_ids in various stages of transformation (original vs converted), so defensive coding with format detection prevents runtime errors. For VIDEO/animate operations, custom_ids can be in format "MJ::JOB::animate_high::..." (original) or "MJ::AnimateModal::..." (already converted).
+
+[2024-12-21] For Discord API parameter management: All API parameter files in Resources/ApiParams must be included as EmbeddedResource in the .csproj file to be loaded into the _paramsMap dictionary at runtime. Missing parameter files will cause KeyNotFoundException when the corresponding Discord operations are invoked. Parameter files follow a consistent JSON structure with type 5 for modal operations, containing application_id, channel_id, guild_id, data section with custom_id and components, session_id, and nonce placeholders.
+
+[2024-12-21] For TaskInfo ImageUrls generation: The ImageUrls property should be populated not only for IMAGINE type tasks but also for any task whose buttons contain "MJ::JOB::upsample::" patterns. This ensures consistent image URL access across different task types that produce image results. The logic should check both the task Action type and the buttons' CustomId values to determine when to generate the image URL array.
+
+[2024-12-21] For TaskInfo VideoUrls generation: VIDEO and VIDEO_EXTEND task types should generate both VideoUrls and ImageUrls simultaneously. VideoUrls use the format https://cdn.midjourney.com/video/{JobId}/0_{i}.mp4 while maintaining image URL synchronization for preview purposes. VideoUrlInfo structure is identical to ImgUrlInfo with only a Url property. VideoUrls and ImageUrls correspond through the same index - VideoUrls[i].Url corresponds to ImageUrls[i].Url for the same content at different formats. 

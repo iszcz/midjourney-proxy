@@ -889,11 +889,6 @@ namespace Midjourney.Infrastructure.Services
                     var ifarmeCustomId = task.GetProperty<string>(Constants.TASK_PROPERTY_IFRAME_MODAL_CREATE_CUSTOM_ID, default);
                     return await discordInstance.InpaintAsync(task, ifarmeCustomId, task.PromptEn, submitAction.MaskBase64);
                 }
-                // 视频
-                else if (customId.StartsWith("MJ::JOB::animate"))
-                {
-                    return await discordInstance.AnimateAsync(task, task.RemixModalMessageId, customId, task.PromptEn, nonce);
-                }
                 // 图生文 -> 文生图
                 else if (customId.StartsWith("MJ::Job::PicReader::"))
                 {
@@ -918,7 +913,7 @@ namespace Midjourney.Infrastructure.Services
                         customId, task.PromptEn, nonce, task.RealBotType ?? task.BotType);
                 }
                 // Remix mode
-                else if (task.Action == TaskAction.VARIATION || task.Action == TaskAction.REROLL || task.Action == TaskAction.PAN)
+                else if (task.Action == TaskAction.VARIATION || task.Action == TaskAction.REROLL || task.Action == TaskAction.PAN || task.Action == TaskAction.VIDEO || task.Action == TaskAction.VIDEO_EXTEND)
                 {
                     nonce = SnowFlake.NextId();
                     task.Nonce = nonce;
@@ -1043,6 +1038,11 @@ namespace Midjourney.Infrastructure.Services
                     {
                         modal = "MJ::AnimateModal::prompt";
                         var parts = customId.Split("::");
+                        var extend = 0;
+                        if (action == TaskAction.VIDEO_EXTEND)
+                        {
+                            extend = 1;
+                        }
                         
                         // 检查是否已经是转换后的格式
                         if (customId.StartsWith("MJ::AnimateModal::"))
@@ -1054,7 +1054,7 @@ namespace Midjourney.Infrastructure.Services
                         {
                             // 原始格式转换：MJ::JOB::animate_high::1::hash::SOLO -> MJ::AnimateModal::hash::1::high:0
                             var animateType = parts[2].Contains('_') ? parts[2].Split('_')[1] : parts[2];
-                            var convertedString = $"MJ::AnimateModal::{parts[4]}::{parts[3]}::{animateType}:0";
+                            var convertedString = $"MJ::AnimateModal::{parts[4]}::{parts[3]}::{animateType}::{extend}";
                             customId = convertedString;
                         }
 

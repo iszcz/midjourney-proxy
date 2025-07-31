@@ -646,7 +646,7 @@ namespace Midjourney.API.Controllers
 
             // 放大
             // MJ::JOB::upsample::2::898416ec-7c18-4762-bf03-8e428fee1860
-            if (actionDTO.CustomId.StartsWith("MJ::JOB::upsample::"))
+            if (actionDTO.CustomId.StartsWith("MJ::JOB::upsample::") || actionDTO.CustomId.StartsWith("MJ::JOB::video_virtual_upscale::"))
             {
                 task.Action = TaskAction.UPSCALE;
                 task.IsPriority = true; // 设置放大任务为优先任务

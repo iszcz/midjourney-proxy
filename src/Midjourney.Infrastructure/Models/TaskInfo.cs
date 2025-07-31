@@ -190,6 +190,12 @@ namespace Midjourney.Infrastructure.Models
         public string ImageUrl { get; set; }
 
         /// <summary>
+        /// 视频URL。
+        /// </summary>
+        [Column(StringLength = 1024)]
+        public string VideoUrl { get; set; }
+
+        /// <summary>
         /// 缩略图 url
         /// </summary>
         [Column(StringLength = 1024)]
@@ -357,6 +363,12 @@ namespace Midjourney.Infrastructure.Models
         public List<ImgUrlInfo> ImageUrls { get; set; } = new List<ImgUrlInfo>();
 
         /// <summary>
+        /// 视频URL数组（用于VIDEO和VIDEO_EXTEND任务完成时存储视频的URL）
+        /// </summary>
+        [JsonMap]
+        public List<VideoUrlInfo> VideoUrls { get; set; } = new List<VideoUrlInfo>();
+
+        /// <summary>
         /// 启动任务。
         /// </summary>
         public void Start()
@@ -410,8 +422,21 @@ namespace Midjourney.Infrastructure.Models
             Status = TaskStatus.SUCCESS;
             Progress = "100%";
 
-            // 为IMAGINE类型任务生成图片URL数组
+            // 为IMAGINE类型任务或包含upsample按钮的任务生成图片URL数组
+            bool shouldGenerateImageUrls = false;
+            
+            // 检查是否为IMAGINE类型任务
             if (Action == TaskAction.IMAGINE && !string.IsNullOrWhiteSpace(JobId))
+            {
+                shouldGenerateImageUrls = true;
+            }
+            // 检查buttons中是否包含upsample相关的customId
+            else if (!string.IsNullOrWhiteSpace(JobId) && Buttons?.Any(x => x.CustomId?.Contains("MJ::JOB::upsample::") == true) == true)
+            {
+                shouldGenerateImageUrls = true;
+            }
+            
+            if (shouldGenerateImageUrls)
             {
                 ImageUrls = new List<ImgUrlInfo>();
                 for (int i = 0; i < 4; i++)
@@ -419,6 +444,32 @@ namespace Midjourney.Infrastructure.Models
                     ImageUrls.Add(new ImgUrlInfo
                     {
                         Url = $"https://cdn.midjourney.com/{JobId}/0_{i}.png"
+                    });
+                }
+            }
+
+            // 为VIDEO和VIDEO_EXTEND类型任务生成视频URL数组
+            if ((Action == TaskAction.VIDEO || Action == TaskAction.VIDEO_EXTEND) && !string.IsNullOrWhiteSpace(JobId))
+            {
+                // VideoUrl直接使用现有的ImageUrl（ImageUrl本身就是视频链接）
+                VideoUrl = ImageUrl;
+                
+                VideoUrls = new List<VideoUrlInfo>();
+                ImageUrls = new List<ImgUrlInfo>(); // 同时同步到imageUrls
+                
+                for (int i = 0; i < 4; i++)
+                {
+                    var videoUrl = $"https://cdn.midjourney.com/video/{JobId}/0_{i}.mp4";
+                    
+                    // VideoUrls和ImageUrls都存储相同的视频URL，通过相同索引对应
+                    VideoUrls.Add(new VideoUrlInfo
+                    {
+                        Url = videoUrl
+                    });
+                    
+                    ImageUrls.Add(new ImgUrlInfo
+                    {
+                        Url = videoUrl
                     });
                 }
             }
@@ -519,6 +570,17 @@ namespace Midjourney.Infrastructure.Models
     {
         /// <summary>
         /// 图片URL
+        /// </summary>
+        public string Url { get; set; }
+    }
+
+    /// <summary>
+    /// 视频URL信息类
+    /// </summary>
+    public class VideoUrlInfo
+    {
+        /// <summary>
+        /// 视频URL
         /// </summary>
         public string Url { get; set; }
     }
