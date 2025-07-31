@@ -138,7 +138,15 @@ namespace Midjourney.API.Controllers
 
             prompt = prompt.Trim();
             var task = NewTask(imagineDTO);
-            task.Action = TaskAction.IMAGINE;
+            // 检测是否为视频命令
+            if (prompt.Contains("--video"))
+            {
+                task.Action = TaskAction.VIDEO;
+            }
+            else
+            {
+                task.Action = TaskAction.IMAGINE;
+            }
             task.Prompt = prompt;
             task.BotType = GetBotType(imagineDTO.BotType);
 
@@ -559,6 +567,86 @@ namespace Midjourney.API.Controllers
             NewTaskDoFilter(task, dto.AccountFilter);
 
             return Ok(_taskService.ShortenAsync(task));
+        }
+
+        /// <summary>
+        /// 提交Video任务
+        /// </summary>
+        /// <param name="videoDTO">提交Video任务的DTO</param>
+        /// <returns>提交结果</returns>
+        [HttpPost("video")]
+        public ActionResult<SubmitResultVO> Video([FromBody] SubmitVideoDTO videoDTO)
+        {
+            if (string.IsNullOrWhiteSpace(videoDTO.Prompt))
+            {
+                return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "prompt不能为空"));
+            }
+
+            // 处理视频扩展操作
+            if (!string.IsNullOrWhiteSpace(videoDTO.Action) && videoDTO.Action.ToLowerInvariant() == "extend")
+            {
+                // 验证extend操作的必需参数
+                if (string.IsNullOrWhiteSpace(videoDTO.TaskId))
+                {
+                    return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "extend操作需要提供taskId"));
+                }
+
+                if (!videoDTO.Index.HasValue || videoDTO.Index < 1 || videoDTO.Index > 4)
+                {
+                    return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "extend操作需要提供有效的index (1-4)"));
+                }
+
+                var task = NewTask(videoDTO);
+                task.BotType = GetBotType(videoDTO.BotType);
+                task.Prompt = videoDTO.Prompt.Trim();
+
+                NewTaskDoFilter(task, videoDTO.AccountFilter);
+
+                // 调用视频扩展方法
+                return Ok(_taskService.SubmitVideoExtend(
+                    videoDTO.TaskId, 
+                    videoDTO.Index.Value, 
+                    videoDTO.Prompt.Trim(), 
+                    videoDTO.Motion ?? "low", 
+                    task));
+            }
+
+            // 处理普通视频操作 - 转换为 Imagine 请求
+            if (string.IsNullOrWhiteSpace(videoDTO.Image))
+            {
+                return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "普通video操作需要提供image"));
+            }
+
+            // 构建video的imagine命令
+            var prompt = videoDTO.Prompt.Trim();
+            var imaginePrompt = $"{videoDTO.Image} {prompt} --video 1";
+            
+            if (!string.IsNullOrWhiteSpace(videoDTO.EndImage))
+            {
+                imaginePrompt += $" --end {videoDTO.EndImage}";
+            }
+            
+            if (!string.IsNullOrWhiteSpace(videoDTO.Motion))
+            {
+                imaginePrompt += $" --motion {videoDTO.Motion}";
+            }
+
+            if (videoDTO.Loop == true)
+            {
+                imaginePrompt += " --loop";
+            }
+
+            // 构造 SubmitImagineDTO 并调用 Imagine 接口
+            var imagineDTO = new SubmitImagineDTO
+            {
+                Prompt = imaginePrompt,
+                BotType = videoDTO.BotType,
+                AccountFilter = videoDTO.AccountFilter,
+                Base64Array = new List<string>() // 空的base64数组
+            };
+
+            // 直接调用现有的 Imagine 接口
+            return Imagine(imagineDTO);
         }
 
         /// <summary>

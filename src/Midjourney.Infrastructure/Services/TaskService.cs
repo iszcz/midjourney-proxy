@@ -1557,5 +1557,60 @@ namespace Midjourney.Infrastructure.Services
             var response = await client.ExecuteAsync(request);
             return response.Content;
         }
+
+        /// <summary>
+        /// 提交视频扩展任务（先放大再扩展）
+        /// </summary>
+        /// <param name="sourceTaskId">源任务ID</param>
+        /// <param name="index">要放大的图片索引</param>
+        /// <param name="prompt">扩展的提示词</param>
+        /// <param name="motion">运动程度</param>
+        /// <param name="task">新任务对象</param>
+        /// <returns>提交结果</returns>
+        public SubmitResultVO SubmitVideoExtend(string sourceTaskId, int index, string prompt, string motion, TaskInfo task)
+        {
+            // 1. 获取源任务信息
+            var sourceTask = _taskStoreService.Get(sourceTaskId);
+            if (sourceTask == null)
+            {
+                return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "源任务不存在");
+            }
+
+            if (sourceTask.Status != TaskStatus.SUCCESS)
+            {
+                return SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "源任务未完成，无法执行扩展操作");
+            }
+
+            // 2. 准备upscale任务的参数
+            var messageId = sourceTask.GetProperty<string>(Constants.TASK_PROPERTY_MESSAGE_ID, default);
+            var messageHash = sourceTask.GetProperty<string>(Constants.TASK_PROPERTY_MESSAGE_HASH, default);  
+            var messageFlags = sourceTask.GetProperty<string>(Constants.TASK_PROPERTY_FLAGS, default)?.ToInt() ?? 0;
+
+            if (string.IsNullOrWhiteSpace(messageId) || string.IsNullOrWhiteSpace(messageHash))
+            {
+                return SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "源任务缺少必要的消息信息");
+            }
+
+            // 3. 设置任务为VIDEO_EXTEND类型，用于后续的extend操作
+            task.Action = TaskAction.VIDEO_EXTEND;
+            task.ParentId = sourceTaskId;
+            task.PromptEn = prompt;
+            task.Description = $"Video extend: {prompt} --motion {motion}";
+            
+            // 存储extend相关的参数，用于upscale完成后的extend操作
+            task.SetProperty("EXTEND_PROMPT", prompt);
+            task.SetProperty("EXTEND_MOTION", motion);
+            task.SetProperty("EXTEND_INDEX", index.ToString());
+            task.SetProperty("EXTEND_SOURCE_TASK_ID", sourceTaskId);
+
+            // 复制源任务的实例和bot类型信息
+            task.InstanceId = sourceTask.InstanceId;
+            task.BotType = sourceTask.BotType;
+            task.RealBotType = sourceTask.RealBotType;
+            task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, sourceTask.GetProperty<string>(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, default));
+
+            // 4. 先执行upscale操作，这将触发后续的extend流程
+            return SubmitUpscale(task, messageId, messageHash, index, messageFlags);
+        }
     }
 }

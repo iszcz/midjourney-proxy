@@ -192,5 +192,16 @@ namespace Midjourney.Infrastructure.Services
         /// <param name="dto"></param>
         /// <returns></returns>
         Task MjPlusMigration(MjPlusMigrationDto dto);
+
+        /// <summary>
+        /// 提交视频扩展任务（先放大再扩展）
+        /// </summary>
+        /// <param name="sourceTaskId">源任务ID</param>
+        /// <param name="index">要放大的图片索引</param>
+        /// <param name="prompt">扩展的提示词</param>
+        /// <param name="motion">运动程度</param>
+        /// <param name="task">新任务对象</param>
+        /// <returns>提交结果</returns>
+        SubmitResultVO SubmitVideoExtend(string sourceTaskId, int index, string prompt, string motion, TaskInfo task);
     }
 }

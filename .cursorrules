@@ -134,6 +134,29 @@ Task completed: Enhanced ImageUrls generation to support tasks with upsample but
 - ✅ Ensure VideoUrls are saved to database and included in callbacks and queries automatically
 Task completed: Added VideoUrls field to TaskInfo for VIDEO tasks to provide easy access to video URLs while maintaining image URL synchronization
 
+[2024-12-21] Task: Add /mj/submit/video API endpoint
+- ✅ Create SubmitVideoDTO class with prompt, motion, image, endImage parameters
+- ✅ Add Video action endpoint in SubmitController
+- ✅ Implement parameter validation for required fields
+- ✅ Convert video parameters to imagine command format: /imagine {image} {prompt} --video 1 --end {endImage} --motion {motion}
+- ✅ Set task action to TaskAction.VIDEO
+- ✅ Reuse existing SubmitImagine infrastructure for task processing
+Task completed: Added new video submission API that converts video parameters to imagine commands for seamless integration with existing workflow
+
+[2024-12-21] Task: Implement video extend functionality (upscale then extend)
+- ✅ Extend SubmitVideoDTO to support action, index, taskId parameters for extend operations
+- ✅ Add SubmitVideoExtend method to ITaskService interface
+- ✅ Implement SubmitVideoExtend in TaskService with two-step operation logic
+- ✅ Modify Video endpoint to handle extend action with parameter validation
+- ✅ Add automatic extend trigger logic in TaskInfo.Success() method for completed upscale tasks
+- ✅ Implement proper task state management for VIDEO_EXTEND workflow
+- ✅ Store extend parameters (prompt, motion, source task) for post-upscale processing
+- ✅ Fix NullReferenceException by calling Imagine endpoint directly for normal video operations
+- ✅ Enhance Imagine endpoint to detect --video parameter and set correct TaskAction.VIDEO type
+- ✅ Add Loop field support to SubmitVideoDTO for --loop parameter
+- ✅ Implement Loop detection in Video endpoint to add --loop parameter to command
+Task completed: Implemented comprehensive video extend functionality supporting upscale-then-extend workflow with automatic task progression
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
