@@ -22,11 +22,6 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited. 
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using Microsoft.Extensions.Caching.Memory;
-using Midjourney.Infrastructure.Data;
-using Midjourney.Infrastructure.LoadBalancer;
-using Midjourney.Infrastructure.Util;
-using Serilog;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Compression;
@@ -34,6 +29,9 @@ using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Caching.Memory;
+using Midjourney.Infrastructure.LoadBalancer;
+using Serilog;
 using UAParser;
 
 namespace Midjourney.Infrastructure
@@ -949,7 +947,7 @@ namespace Midjourney.Infrastructure
                 // 尝试自动登录
                 var sw = new Stopwatch();
                 var setting = GlobalConfiguration.Setting;
-                var info = new StringBuilder(); 
+                var info = new StringBuilder();
                 var account = Account;
                 if (setting.EnableAutoLogin)
                 {
@@ -994,8 +992,20 @@ namespace Midjourney.Infrastructure
             {
                 // 邮件通知
                 var smtp = GlobalConfiguration.Setting?.Smtp;
-                EmailJob.Instance.EmailSend(smtp, $"MJ账号禁用通知-{Account.ChannelId}",
-                    $"{Account.ChannelId}, {Account.DisabledReason}");
+
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        await EmailJob.Instance.EmailSend(smtp,
+                            $"MJ账号禁用通知-{Account.ChannelId}",
+                            $"{Account.ChannelId}, {Account.DisabledReason}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Error(ex, "邮件发送失败");
+                    }
+                });
             }
         }
 

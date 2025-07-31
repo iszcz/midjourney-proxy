@@ -22,12 +22,11 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited.
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using Microsoft.Extensions.Logging;
-using Midjourney.Infrastructure.Data;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 using JsonException = System.Text.Json.JsonException;
 using JsonSerializer = System.Text.Json.JsonSerializer;
 
@@ -131,7 +130,8 @@ namespace Midjourney.Infrastructure.Services
             HttpResponseMessage response = await PostJson(notifyHook, paramsStr);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("Notify task change fail, task: {0}({1}), hook: {2}, code: {3}, msg: {4}", taskId, currentStatusStr, notifyHook, (int)response.StatusCode, response.Content.ReadAsStringAsync().Result);
+                var content = response.Content.ReadAsStringAsync();
+                _logger.LogWarning("Notify task change fail, task: {0}({1}), hook: {2}, code: {3}, msg: {4}", taskId, currentStatusStr, notifyHook, (int)response.StatusCode, content);
             }
         }
 

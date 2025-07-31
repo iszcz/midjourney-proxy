@@ -22,17 +22,15 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited. 
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using Midjourney.Infrastructure.Data;
 using Midjourney.Infrastructure.Handle;
 using Midjourney.Infrastructure.LoadBalancer;
 using Midjourney.Infrastructure.Services;
-using Midjourney.Infrastructure.Storage;
 
 namespace Midjourney.API
 {
     public static class ServiceCollectionExtensions
     {
-        public static void AddMidjourneyServices(this IServiceCollection services, ProxyProperties config)
+        public static void AddMidjourneyServices(this IServiceCollection services, Setting config)
         {
 
             // 注册所有的处理程序
@@ -86,6 +84,10 @@ namespace Midjourney.API
 
             // 存储服务
             StorageHelper.Configure();
+
+            // 缓存服务
+            // 缓存
+            GlobalCacheHelper.Configure();
 
             // 存储服务
             // 内存

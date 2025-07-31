@@ -24,8 +24,24 @@ The most powerful, complete, full-featured, completely free and open source Midj
 
 <img src="./docs/screenshots/565908696.png" alt="欢迎" width="360"/>
 
+## Midjourney 官网绘图接入文档
+
+- https://trueai-org.feishu.cn/docx/ZDeUdPCBho4IE0xJHxpcXbdYnKd
+
+## 悠船接入文档
+
+- https://trueai-org.feishu.cn/docx/KrdIdOKm4otVmwxdv3AcLjsEnXf
+ 
+<img src="./docs/screenshots/youchuanhezuo.jpg" alt="悠船合作群" width="360"/>
+
 ## 主要功能
 
+- [x] 支持 Discord 绘图。
+- [x] 支持悠船绘图。
+- [x] 支持官网 Midjourney 绘图（内测中）。
+- [x] 增加在线升级功能。
+- [x] 增加在线重启功能。
+- [x] 支持弹性部署，负载均衡，支持 Consul 配置中心。
 - [x] 支持 Imagine 指令和相关动作 [V1/V2.../U1/U2.../R]
 - [x] Imagine 时支持添加图片 base64，作为垫图
 - [x] 支持 Blend (图片混合)、Describe (图生文) 指令、Shorten (提示词分析) 指令
@@ -91,13 +107,16 @@ The most powerful, complete, full-featured, completely free and open source Midj
 - [x] 自动过 Tos not accepted 验证
 - [x] 2FA 验证器，示例：<http://47.76.110.222:8081/code>，详情：<http://47.76.110.222:8081/swagger/index.html>
 - [x] 赞助账号功能
-- [x] 阿里云存储、腾讯云存储、本地存储、Cloudflare R2（不限流量！详情：<https://developers.cloudflare.com/r2/>）
+- [x] 阿里云存储、腾讯云存储、本地存储、S3存储（感谢`@八级大狂风`赞助支持）、Cloudflare R2（不限流量！详情：<https://developers.cloudflare.com/r2/>）
 - [x] MJ 翻译、NIJI 翻译独立配置
 - [x] 转换 Niji 为 MJ：启用后将 Niji · journey 任务自动转为 Midjourney 任务，并对任务添加 --niji 后缀（转换后出图效果是一致的），即：不添加 Niji 机器人也可以通过 Niji 机器人绘图
 - [x] 转换 --niji 为 Niji Bot：启用后当 prompt 中包含 --niji 时，将会自动转换为 Niji·journey Bot 任务
 - [x] 支持账号自动登录功能（Discord 账号开启 2FA <https://github.com/trueai-org/midjourney-proxy/wiki/2FAopen>，登陆器配置 YesCaptchaKey <https://yescaptcha.com/i/4pizLQ>）
 - [x] 新增 Sqlite、MySQL、SqlServer、PostgreSQL 数据库支持；感谢 `@如风` 赞助此功能！
 - [x] 新增 账号限制、并发、有效期等功能；感谢 `@TOOM` 赞助此功能！
+- [x] 支持生成视频。
+- [x] 支持 Midjourney 官网绘图。
+- [x] 支持 Youchuan 悠船绘图。
 - [ ] 自动加入频道、自动切换频道（暂未支持）
 
 ## 在线预览
@@ -111,6 +130,8 @@ The most powerful, complete, full-featured, completely free and open source Midj
 - 接口密钥：`无`
 - 自动验证/自动登录服务器地址：<http://47.76.110.222:8081>
 - 自动验证/自动登录服务器文档：<http://47.76.110.222:8081/swagger>
+
+> 由于公益验证器，受到大量恶意攻击，目前已暂停服务，如有需要请自行部署验证器。
 
 ## 预览截图
 
@@ -153,6 +174,8 @@ The most powerful, complete, full-featured, completely free and open source Midj
 注意：一定确认映射文件和路径不要出错⚠
 
 ```bash
+# 提示：官方镜像需要更多内存，服务器最低：2GB 内存
+# 官方镜像（完整版，支持Discord、悠船、官方绘图，包含更多依赖）
 # 自动安装并启动
 # 推荐使用一键升级脚本
 # 1.首次下载（下载后可以编辑此脚本，进行自定义配置，例如：路径、端口、内存等配置，默认8086端口）
@@ -160,6 +183,12 @@ wget -O docker-upgrade.sh https://raw.githubusercontent.com/trueai-org/midjourne
 
 # 2.更新升级（以后升级只需要执行此脚本即可）
 sh docker-upgrade.sh
+```
+
+```bash
+# 基础镜像（轻量版，支持Discord、悠船绘图）
+docker pull registry.cn-guangzhou.aliyuncs.com/trueai-org/midjourney-proxy:lite
+docker pull registry.cn-guangzhou.aliyuncs.com/trueai-org/midjourney-proxy:lite-{version}
 ```
 
 ```bash
@@ -296,7 +325,7 @@ curl -o linux_install.sh https://raw.githubusercontent.com/trueai-org/midjourney
 - `LiteDB`（不推荐）：本地数据库库，默认数据库，默认存储位置：`data/mj.db`
 - `Sqlite`：本地数据库，默认存储位置：`data/mj_sqlite.db`
 - `MongoDB`（推荐）：需要配置数据库连接字符串，示例：`mongodb://mongoadmin:***@192.168.3.241`，需要配置数据库名称：`mj`
-- `MySQL`：需要配置数据库连接字符串，示例：`Data Source=192.168.3.241;Port=3306;User ID=root;Password=xxx; Initial Catalog=mj;Charset=utf8mb4; SslMode=none;Min pool size=1`
+- `MySQL(建议使用 8.x 版本)`：需要配置数据库连接字符串，示例：`Data Source=192.168.3.241;Port=3306;User ID=root;Password=xxx; Initial Catalog=mj;Charset=utf8mb4; SslMode=none;Min pool size=1`
 - `SqlServer`：需要配置数据库连接字符串，示例：`Data Source=192.168.3.241;User Id=sa;Password=xxx;Initial Catalog=mj;Encrypt=True;TrustServerCertificate=True;Pooling=true;Min Pool Size=1`
 - `PostgreSQL`：需要配置数据库连接字符串，示例：`Host=192.168.3.241;Port=5432;Username=mj;Password=xxx; Database=mj;ArrayNullabilityMode=Always;Pooling=true;Minimum Pool Size=1`，需要启动扩展支持字典类型 `CREATE EXTENSION hstore`
 
@@ -414,6 +443,56 @@ docker run -d \
 - 每日最大 200 张
 - 每日工作时间，建议 9：10~22：50
 - 如果有多个账号，则建议开启垂直领域功能，每个账号只做某一类作品
+
+## Consul 配置
+
+```bash
+
+docker stop consul && docker rm consul
+docker run -d --name consul --restart always --network host hashicorp/consul agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0 -bind=172.17.1.99
+
+docker run -d --name consul --network host hashicorp/consul agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0 -bind=172.19.38.1
+
+docker run -d --name consul -p 9500:8500 -p 9600:8600/udp hashicorp/consul agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0 -bind=0.0.0.0
+
+docker run -d --name consul -p 9500:8500 -p 9600:8600/udp hashicorp/consul agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0 -bind=172.19.38.1
+
+docker run -d --name consul --network host hashicorp/consul:latest agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0 -bind=172.19.38.1
+
+docker run -d --name consul --network host hashicorp/consul:latest agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0 -bind=192.168.3.241
+
+docker run -d --name consul --network host hashicorp/consul:latest agent -server -ui -node=server-1 -bootstrap-expect=1 "-client=0.0.0.0"
+
+docker run -d --name consul -p 8500:8500 -p 8600:8600/udp hashicorp/consul:latest agent -server -ui -node=server-1 -bootstrap-expect=1 "-client=0.0.0.0"
+
+docker run -d --name consul -p 8500:8500 -p 8600:8600/udp consul:latest agent -server -ui -node=server-1 -bootstrap-expect=1 "-client=0.0.0.0"
+```
+## S3 - MINIO
+
+https://min.io/docs/minio/linux/reference/minio-mc-admin/mc-admin-user.html
+
+> 示例
+
+```bash
+# 启动容器
+docker run -d -p 9000:9000 -p 9001:9001 \
+  --name minio-test \
+  -e "MINIO_ROOT_USER=minioadmin" \
+  -e "MINIO_ROOT_PASSWORD=minioadmin" \
+  quay.io/minio/minio:latest server /data --console-address ":9001"
+
+# 你必须先用 mc 设置 MinIO 服务的别名，并且该别名要指向你的 MinIO 服务地址。
+mc alias set myminio http://192.168.3.241:9000 minioadmin minioadmin
+
+# 命令确认
+mc ls myminio
+
+# 如果没有 test 桶，需要先创建
+mc mb myminio/test
+
+# 设置匿名只读策略
+mc anonymous set download myminio/test
+```
 
 ## 支持与赞助
 

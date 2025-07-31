@@ -15,18 +15,16 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 // Additional Terms:
-// This software shall not be used for any illegal activities. 
+// This software shall not be used for any illegal activities.
 // Users must comply with all applicable laws and regulations,
-// particularly those related to image and video processing. 
+// particularly those related to image and video processing.
 // The use of this software for any form of illegal face swapping,
-// invasion of privacy, or any other unlawful purposes is strictly prohibited. 
+// invasion of privacy, or any other unlawful purposes is strictly prohibited.
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
-using Midjourney.Infrastructure.Data;
-using Midjourney.Infrastructure.Dto;
 
 namespace Midjourney.API.Controllers
 {
@@ -53,7 +51,9 @@ namespace Midjourney.API.Controllers
         public Result<HomeDto> Info()
         {
             var now = DateTime.Now.ToString("yyyyMMdd");
-            var data = _memoryCache.GetOrCreate($"{now}_home", c =>
+            var homeKey = $"{now}_home";
+
+            var data = _memoryCache.GetOrCreate(homeKey, c =>
             {
                 c.SetAbsoluteExpiration(TimeSpan.FromMinutes(10));
 
@@ -75,22 +75,82 @@ namespace Midjourney.API.Controllers
                 dto.TotalDraw = (int)DbHelper.Instance.TaskStore.Count(x => true);
 
                 // 今日绘图客户端 top 10
-                var top10 = DbHelper.Instance.TaskStore.Where(x => x.SubmitTime >= now)
-                    .ToList()
-                    .GroupBy(c => string.Join(".", c.ClientIp?.Split('.')?.Take(2) ?? []) + ".x.x")
-                    .Select(c => new
+                var setting = GlobalConfiguration.Setting;
+
+                var top = GlobalConfiguration.Setting.HomeTopCount;
+                if (top <= 0)
+                {
+                    top = 10; // 默认取前10
+                }
+                if (top > 100)
+                {
+                    top = 100; // 最多取前100
+                }
+
+                var todayList = DbHelper.Instance.TaskStore.Where(x => x.SubmitTime >= now).ToList();
+                var tops = todayList
+                .GroupBy(c =>
+                {
+                    if (setting.HomeDisplayRealIP)
+                    {
+                        return c.ClientIp ?? "null";
+                    }
+
+                    // 如果不显示真实IP，则只显示前两段IP地址
+                    // 只显示前两段IP地址
+                    return string.Join(".", c.ClientIp?.Split('.')?.Take(2) ?? []) + ".x.x";
+                })
+                .Select(c =>
+                {
+                    // 如果显示 ip 对应的身份
+                    if (setting.HomeDisplayUserIPState)
+                    {
+                        var item = todayList.FirstOrDefault(u => u.ClientIp == c.Key && !string.IsNullOrWhiteSpace(u.State));
+
+                        return new
+                        {
+                            ip = (c.Key ?? "null") + " - " + item?.State,
+                            count = c.Count(),
+                        };
+                    }
+
+                    return new
                     {
                         ip = c.Key ?? "null",
                         count = c.Count()
-                    })
-                    .OrderByDescending(c => c.count)
-                    .Take(10)
-                    .ToDictionary(c => c.ip, c => c.count);
+                    };
+                })
+                .OrderByDescending(c => c.count)
+                .Take(top)
+                .ToDictionary(c => c.ip, c => c.count);
 
-                dto.Tops = top10;
+                dto.Tops = tops;
 
                 return dto;
             });
+            data.SystemInfo = SystemInfo.GetCurrentSystemInfo();
+
+            var homeCounter = new Dictionary<GenerationSpeedMode, Dictionary<TaskAction, int>>();
+            var counter = DrawCounter.AccountTodayCounter;
+            var all = counter.Where(c => c.Key.StartsWith(now)).SelectMany(c => c.Value).ToList();
+            foreach (var item in all)
+            {
+                if (!homeCounter.ContainsKey(item.Key))
+                {
+                    homeCounter.TryAdd(item.Key, []);
+                }
+
+                foreach (var action in item.Value)
+                {
+                    if (!homeCounter[item.Key].ContainsKey(action.Key))
+                    {
+                        homeCounter[item.Key][action.Key] = 0;
+                    }
+
+                    homeCounter[item.Key][action.Key] += action.Value;
+                }
+            }
+            data.TodayCounter = homeCounter.OrderBy(c => c.Key).ToDictionary(c => c.Key, c => c.Value.OrderBy(x => x.Key).ToDictionary(x => x.Key, x => x.Value));
 
             return Result.Ok(data);
         }

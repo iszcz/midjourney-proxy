@@ -22,26 +22,18 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited. 
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
+using System.Net;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Discord;
 using Discord.Commands;
 using Discord.Net.Rest;
 using Discord.Net.WebSockets;
 using Discord.WebSocket;
-using Midjourney.Infrastructure.Data;
-using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.Handle;
 using Midjourney.Infrastructure.LoadBalancer;
-using Midjourney.Infrastructure.Models;
-using Midjourney.Infrastructure.Services;
-using Midjourney.Infrastructure.Util;
 using RestSharp;
 using Serilog;
-using System.Diagnostics.Metrics;
-using System.Net;
-using System.Text.Json;
-using System.Text.RegularExpressions;
-
-using EventData = Midjourney.Infrastructure.Dto.EventData;
 
 namespace Midjourney.Infrastructure
 {
@@ -54,28 +46,17 @@ namespace Midjourney.Infrastructure
 
         private readonly WebProxy _webProxy;
         private readonly DiscordHelper _discordHelper;
-        private readonly ProxyProperties _properties;
-        private readonly IPromptReviewService _promptReviewService;
-        private readonly ITaskService _taskService;
-        private readonly ITaskStoreService _taskStoreService;
+        private readonly Setting _setting;
 
         private DiscordInstance _discordInstance;
         private IEnumerable<BotMessageHandler> _botMessageHandlers;
         private IEnumerable<UserMessageHandler> _userMessageHandlers;
 
-        public BotMessageListener(
-            DiscordHelper discordHelper, 
-            WebProxy webProxy = null,
-            IPromptReviewService promptReviewService = null,
-            ITaskService taskService = null,
-            ITaskStoreService taskStoreService = null)
+        public BotMessageListener(DiscordHelper discordHelper, WebProxy webProxy = null)
         {
-            _properties = GlobalConfiguration.Setting;
+            _setting = GlobalConfiguration.Setting;
             _webProxy = webProxy;
             _discordHelper = discordHelper;
-            _promptReviewService = promptReviewService;
-            _taskService = taskService;
-            _taskStoreService = taskStoreService;
         }
 
         public void Init(
@@ -330,7 +311,7 @@ namespace Midjourney.Infrastructure
                                         try
                                         {
                                             // 通知验证服务器
-                                            if (!string.IsNullOrWhiteSpace(_properties.CaptchaNotifyHook) && !string.IsNullOrWhiteSpace(_properties.CaptchaServer))
+                                            if (!string.IsNullOrWhiteSpace(_setting.CaptchaNotifyHook) && !string.IsNullOrWhiteSpace(_setting.CaptchaServer))
                                             {
                                                 // 使用 restsharp 通知，最多 3 次
                                                 var notifyCount = 0;
@@ -342,7 +323,7 @@ namespace Midjourney.Infrastructure
                                                     }
 
                                                     notifyCount++;
-                                                    var notifyUrl = $"{_properties.CaptchaServer.Trim().TrimEnd('/')}/cf/verify";
+                                                    var notifyUrl = $"{_setting.CaptchaServer.Trim().TrimEnd('/')}/cf/verify";
                                                     var client = new RestClient();
                                                     var request = new RestRequest(notifyUrl, Method.Post);
                                                     request.AddHeader("Content-Type", "application/json");
@@ -350,8 +331,8 @@ namespace Midjourney.Infrastructure
                                                     {
                                                         Url = hashUrl,
                                                         State = Account.ChannelId,
-                                                        NotifyHook = _properties.CaptchaNotifyHook,
-                                                        Secret = _properties.CaptchaNotifySecret
+                                                        NotifyHook = _setting.CaptchaNotifyHook,
+                                                        Secret = _setting.CaptchaNotifySecret
                                                     };
                                                     var json = Newtonsoft.Json.JsonConvert.SerializeObject(body);
                                                     request.AddJsonBody(json);
@@ -367,8 +348,18 @@ namespace Midjourney.Infrastructure
                                                     Thread.Sleep(1000);
                                                 } while (true);
 
-                                                // 发送邮件
-                                                EmailJob.Instance.EmailSend(_properties.Smtp, $"CF自动真人验证-{Account.ChannelId}", hashUrl);
+        
+                                                Task.Run(async () =>
+                                                {
+                                                    try
+                                                    {
+                                                        await EmailJob.Instance.EmailSend(_setting.Smtp, $"CF自动真人验证-{Account.ChannelId}", hashUrl);
+                                                    }
+                                                    catch (Exception ex)
+                                                    {
+                                                        _logger.Error(ex, "邮件发送失败");
+                                                    }
+                                                });
                                             }
                                             else
                                             {
@@ -411,8 +402,17 @@ namespace Midjourney.Infrastructure
 
                                                             Account.CfUrl = url;
 
-                                                            // 发送邮件
-                                                            EmailJob.Instance.EmailSend(_properties.Smtp, $"CF手动真人验证-{Account.ChannelId}", url);
+                                                            Task.Run(async () =>
+                                                            {
+                                                                try
+                                                                {
+                                                                    await EmailJob.Instance.EmailSend(_setting.Smtp, $"CF手动真人验证-{Account.ChannelId}", url);
+                                                                }
+                                                                catch (Exception ex)
+                                                                {
+                                                                    _logger.Error(ex, "邮件发送失败");
+                                                                }
+                                                            });
                                                         }
                                                     }
                                                 }
@@ -907,7 +907,6 @@ namespace Midjourney.Infrastructure
                                         "Invalid link", // 无效链接
                                         "Request cancelled due to output filters",
                                         "Queue full", // 执行中的队列已满
-                                        "Unlock your personalization to use V7", // 任务已排队
                                     };
 
                                     // 跳过的 title
@@ -993,10 +992,19 @@ namespace Midjourney.Infrastructure
                                                     _discordInstance?.ClearAccountCache(Account.Id);
                                                     _discordInstance?.Dispose();
 
-
-                                                    // 发送邮件
-                                                    EmailJob.Instance.EmailSend(_properties.Smtp, $"MJ账号禁用通知-{Account.ChannelId}",
-                                                        $"{Account.ChannelId}, {Account.DisabledReason}");
+                                                    Task.Run(async () =>
+                                                    {
+                                                        try
+                                                        {
+                                                            await EmailJob.Instance.EmailSend(_setting.Smtp,
+                                                                $"MJ账号禁用通知-{Account.ChannelId}",
+                                                                $"{Account.ChannelId}, {Account.DisabledReason}"); 
+                                                        }
+                                                        catch (Exception ex)
+                                                        {
+                                                            _logger.Error(ex, "邮件发送失败");
+                                                        }
+                                                    });
                                                 }
                                                 catch (Exception ex)
                                                 {
@@ -1044,9 +1052,20 @@ namespace Midjourney.Infrastructure
                                                 _discordInstance?.ClearAccountCache(Account.Id);
                                                 _discordInstance?.Dispose();
 
-                                                // 发送邮件
-                                                EmailJob.Instance.EmailSend(_properties.Smtp, $"MJ账号禁用通知-{Account.ChannelId}",
-                                                    $"{Account.ChannelId}, {Account.DisabledReason}");
+            
+                                                Task.Run(async () =>
+                                                {
+                                                    try
+                                                    {
+                                                        await EmailJob.Instance.EmailSend(_setting.Smtp,
+                                                            $"MJ账号禁用通知-{Account.ChannelId}",
+                                                            $"{Account.ChannelId}, {Account.DisabledReason}");
+                                                    }
+                                                    catch (Exception ex)
+                                                    {
+                                                        _logger.Error(ex, "邮件发送失败");
+                                                    }
+                                                });
                                             }
                                             catch (Exception ex)
                                             {
@@ -1147,13 +1166,6 @@ namespace Midjourney.Infrastructure
                                                     if (!task.MessageIds.Contains(id))
                                                     {
                                                         task.MessageIds.Add(id);
-                                                    }
-
-                                                    // 检查是否为Banned prompt detected错误并尝试AI审核重试
-                                                    if (title == "Banned prompt detected" && TryAIReviewRetry(task, desc))
-                                                    {
-                                                        // AI审核重试成功，不执行task.Fail
-                                                        return;
                                                     }
 
                                                     task.Fail(error);
@@ -1415,228 +1427,6 @@ namespace Midjourney.Infrastructure
             }
 
             return data;
-        }
-
-        /// <summary>
-        /// 尝试AI审核重试，处理Banned prompt detected错误
-        /// </summary>
-        /// <param name="task">原始任务</param>
-        /// <param name="errorDescription">错误描述</param>
-        /// <returns>是否成功提交重试任务</returns>
-        private bool TryAIReviewRetry(TaskInfo task, string errorDescription)
-        {
-            // 检查必要的条件
-            if (_promptReviewService == null || _taskService == null)
-            {
-                _logger.Warning("TryAIReviewRetry: AI审核服务或任务服务未注入，TaskId: {TaskId}", task.Id);
-                return false;
-            }
-
-            // 检查是否已经进行过AI审核重试
-            if (task.HasAIReviewRetried)
-            {
-                _logger.Information("TryAIReviewRetry: 任务已进行过AI审核重试，直接失败，TaskId: {TaskId}", task.Id);
-                return false;
-            }
-
-            // 检查是否启用AI审核功能
-            if (!GlobalConfiguration.Setting.EnableAIReview)
-            {
-                _logger.Information("TryAIReviewRetry: AI审核功能未启用，TaskId: {TaskId}", task.Id);
-                return false;
-            }
-
-            // 标记已进行AI审核重试并立即清除失败信息
-            task.HasAIReviewRetried = true;
-            task.FailReason = null;  // 立即清除失败原因
-
-            try
-            {
-                _logger.Information("TryAIReviewRetry: 开始AI审核重试，TaskId: {TaskId}, 原始Prompt: {Prompt}", 
-                    task.Id, task.PromptEn);
-
-                // 对原始提示词进行AI审核
-                var originalPrompt = task.PromptEn;
-                if (string.IsNullOrWhiteSpace(originalPrompt))
-                {
-                    _logger.Warning("TryAIReviewRetry: 原始提示词为空，TaskId: {TaskId}", task.Id);
-                    // 恢复失败状态
-                    task.Status = TaskStatus.FAILURE;
-                    task.FailReason = "原始提示词为空，无法进行AI审核重试";
-                    task.Description = task.FailReason;
-                    return false;
-                }
-
-                // 分离URL、参数和文本内容（复用SubmitController中的逻辑）
-                string paramStr = "";
-                var paramMatcher = System.Text.RegularExpressions.Regex.Match(originalPrompt, "\\x20+--[a-z]+.*$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                if (paramMatcher.Success)
-                {
-                    paramStr = paramMatcher.Value;
-                }
-                string promptWithoutParam = originalPrompt.Substring(0, originalPrompt.Length - paramStr.Length);
-
-                List<string> imageUrls = new List<string>();
-                var imageMatcher = System.Text.RegularExpressions.Regex.Matches(promptWithoutParam, "https?://[a-z0-9-_:@&?=+,.!/~*'%$]+\\x20+", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                foreach (System.Text.RegularExpressions.Match match in imageMatcher)
-                {
-                    imageUrls.Add(match.Value);
-                }
-
-                string textToReview = promptWithoutParam;
-                foreach (string imageUrl in imageUrls)
-                {
-                    textToReview = textToReview.Replace(imageUrl, "");
-                }
-
-                // 对文本部分进行AI审核
-                var reviewResult = _promptReviewService.ReviewPrompt(textToReview.Trim());
-
-                if (reviewResult.NeedModify && !string.IsNullOrWhiteSpace(reviewResult.Prompt))
-                {
-                    // 重新组合审核后的文本与URL和参数
-                    var newPromptEn = string.Concat(imageUrls) + reviewResult.Prompt + paramStr;
-
-                    _logger.Information("TryAIReviewRetry: AI审核完成，提示词已修改，TaskId: {TaskId}, 新Prompt: {NewPrompt}, 修改原因: {Reason}", 
-                        task.Id, newPromptEn, reviewResult.Reason);
-
-                    // 更新任务的提示词并重新提交
-                    task.PromptEn = newPromptEn;
-                    task.Status = TaskStatus.NOT_START;
-                    task.Progress = "";
-                    task.FailReason = null;  // 确保失败原因被清除
-                    task.Description = $"Retried: {reviewResult.Reason}";
-                    
-                    // 清理原有的Discord相关信息，准备重新提交
-                    task.MessageId = null;
-                    task.InteractionMetadataId = null;
-                    task.MessageIds.Clear();
-                    task.Nonce = SnowFlake.NextId(); // 生成新的nonce
-                    task.SetProperty(Constants.TASK_PROPERTY_NONCE, task.Nonce); // 同时设置到Properties中
-                    task.SubmitTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                    task.StartTime = null;
-                    task.FinishTime = null;
-                    
-                    // 先将任务从运行列表移除，然后重新提交
-                    _discordInstance.RemoveRunningTask(task);
-                    
-                    // 保存任务状态到数据库
-                    if (_taskStoreService != null)
-                    {
-                        _taskStoreService.Save(task);
-                    }
-                    
-                    // 重新提交任务
-                    if (ResubmitTask(task))
-                    {
-                        // 保存任务状态到数据库（ResubmitTask已更新Description）
-                        if (_taskStoreService != null)
-                        {
-                            _taskStoreService.Save(task);
-                        }
-                        
-                        _logger.Information("TryAIReviewRetry: AI审核重试任务重新提交成功，TaskId: {TaskId}", task.Id);
-                        return true;
-                    }
-                    else
-                    {
-                        // 重新提交失败，设置新的失败状态
-                        task.Status = TaskStatus.FAILURE;
-                        task.Progress = "";
-                        task.FailReason = $"AI审核重试失败: {errorDescription}";
-                        task.Description = task.FailReason;
-                        task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                        _logger.Warning("TryAIReviewRetry: AI审核重试任务重新提交失败，TaskId: {TaskId}", task.Id);
-                        
-                        // 保存失败状态到数据库
-                        if (_taskStoreService != null)
-                        {
-                            _taskStoreService.Save(task);
-                        }
-                        
-                        return false;
-                    }
-                }
-                else
-                {
-                    _logger.Information("TryAIReviewRetry: AI审核未修改提示词，任务失败，TaskId: {TaskId}", task.Id);
-                    // 恢复失败状态，使用新的失败原因
-                    task.Status = TaskStatus.FAILURE;
-                    task.FailReason = $"AI审核未能修复违规内容: {errorDescription}";
-                    task.Description = task.FailReason;
-                    task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "TryAIReviewRetry: AI审核重试过程发生异常，TaskId: {TaskId}", task.Id);
-                // 设置异常失败状态
-                task.Status = TaskStatus.FAILURE;
-                task.Progress = "";
-                task.FailReason = $"AI审核重试异常: {ex.Message}";
-                task.Description = task.FailReason;
-                task.FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
-                
-                // 保存异常状态到数据库
-                if (_taskStoreService != null)
-                {
-                    _taskStoreService.Save(task);
-                }
-                
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// 重新提交任务
-        /// </summary>
-        /// <param name="task">要重新提交的任务</param>
-        /// <returns>是否提交成功</returns>
-        private bool ResubmitTask(TaskInfo task)
-        {
-            try
-            {
-                switch (task.Action)
-                {
-                    case TaskAction.IMAGINE:
-                        // 对于imagine任务，直接调用TaskService提交
-                        var result = _taskService.SubmitImagine(task, new List<DataUrl>(), _discordInstance);
-                        if (result.Code == ReturnCode.SUCCESS || result.Code == ReturnCode.IN_QUEUE)
-                        {
-                            if (result.Code == ReturnCode.IN_QUEUE)
-                            {
-                                // 获取排队信息
-                                var numberOfQueues = (int)(result.GetProperty("numberOfQueues") ?? 0);
-                                task.Description = $"AI审核重试成功，排队中，前面还有{numberOfQueues}个任务";
-                                _logger.Information("ResubmitTask: AI审核重试任务排队中，TaskId: {TaskId}, Queue: {NumberOfQueues}", 
-                                    task.Id, numberOfQueues);
-                            }
-                            else
-                            {
-                                task.Description = "AI审核重试成功，正在处理中";
-                                _logger.Information("ResubmitTask: AI审核重试任务重新提交成功，TaskId: {TaskId}", task.Id);
-                            }
-                            return true;
-                        }
-                        else
-                        {
-                            _logger.Warning("ResubmitTask: AI审核重试任务重新提交失败，TaskId: {TaskId}, Error: {Error}", 
-                                task.Id, result.Description);
-                            return false;
-                        }
-                    
-                    default:
-                        _logger.Warning("ResubmitTask: 不支持的任务类型重新提交，Action: {Action}, TaskId: {TaskId}", 
-                            task.Action, task.Id);
-                        return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "ResubmitTask: 重新提交任务异常，TaskId: {TaskId}", task.Id);
-                return false;
-            }
         }
 
         public void Dispose()
