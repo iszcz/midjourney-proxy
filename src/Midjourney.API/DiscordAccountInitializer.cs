@@ -25,9 +25,11 @@
 using System.Diagnostics;
 using System.Text;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using Midjourney.Infrastructure.Data;
 using Midjourney.Infrastructure.LoadBalancer;
 using Midjourney.Infrastructure.Services;
-using Midjourney.License;
+using Midjourney.Infrastructure.Util;
 using MongoDB.Driver;
 using Newtonsoft.Json.Linq;
 using RestSharp;
@@ -43,40 +45,34 @@ namespace Midjourney.API
         private readonly ITaskService _taskService;
         private readonly DiscordLoadBalancer _discordLoadBalancer;
         private readonly DiscordAccountHelper _discordAccountHelper;
-        private readonly Setting _properties;
+        private readonly ProxyProperties _properties;
         private readonly DiscordHelper _discordHelper;
         private readonly IConfiguration _configuration;
         private readonly IMemoryCache _memoryCache;
-        private readonly ILogger _logger = Log.Logger;
-        private readonly IHostApplicationLifetime _applicationLifetime;
-        private readonly IUpgradeService _upgradeService;
+        private readonly Serilog.ILogger _logger = Log.Logger;
 
         private Timer _timer;
-        //private DateTime? _userDayReset = null;
-        private DateTime? _upgradeTime = null;
+        private DateTime? _userDayReset = null;
 
         public DiscordAccountInitializer(
             DiscordLoadBalancer discordLoadBalancer,
             DiscordAccountHelper discordAccountHelper,
             IConfiguration configuration,
+            IOptions<ProxyProperties> options,
             ITaskService taskService,
             IMemoryCache memoryCache,
-            DiscordHelper discordHelper,
-            IHostApplicationLifetime applicationLifetime,
-            IUpgradeService upgradeService)
+            DiscordHelper discordHelper)
         {
             // 配置全局缓存
             GlobalConfiguration.MemoryCache = memoryCache;
 
-            _properties = GlobalConfiguration.Setting;
             _discordLoadBalancer = discordLoadBalancer;
             _discordAccountHelper = discordAccountHelper;
+            _properties = options.Value;
             _taskService = taskService;
             _configuration = configuration;
             _memoryCache = memoryCache;
             _discordHelper = discordHelper;
-            _applicationLifetime = applicationLifetime;
-            _upgradeService = upgradeService;
         }
 
         /// <summary>
@@ -85,240 +81,218 @@ namespace Midjourney.API
         /// <param name="cancellationToken">取消令牌。</param>
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            var setting = GlobalConfiguration.Setting;
+
+            // 初始化环境变量
+            var proxy = setting.Proxy;
+            if (!string.IsNullOrEmpty(proxy.Host))
+            {
+                Environment.SetEnvironmentVariable("http_proxyHost", proxy.Host);
+                Environment.SetEnvironmentVariable("http_proxyPort", proxy.Port.ToString());
+                Environment.SetEnvironmentVariable("https_proxyHost", proxy.Host);
+                Environment.SetEnvironmentVariable("https_proxyPort", proxy.Port.ToString());
+            }
+
+            // 初始化数据库索引
+            DbHelper.Instance.IndexInit();
+
+            // 是否开启 LiteDB 自动迁移
+            if (setting.DatabaseType != DatabaseType.NONE && setting.DatabaseType != DatabaseType.LiteDB && setting.IsAutoMigrate)
+            {
+                // 迁移 account user domain banded
+                try
+                {
+                    // 如果 liteAccountIds 的数据在 mongoAccountIds 不存在，则迁移到 mongodb
+                    // account 迁移
+                    var liteAccountIds = LiteDBHelper.AccountStore.GetAllIds();
+                    var accountStore = DbHelper.Instance.AccountStore;
+                    var mongoAccountIds = accountStore.GetAllIds();
+                    var accountIds = liteAccountIds.Except(mongoAccountIds).ToList();
+                    if (accountIds.Count > 0)
+                    {
+                        var liteAccounts = LiteDBHelper.AccountStore.GetAll();
+                        foreach (var id in accountIds)
+                        {
+                            var model = liteAccounts.FirstOrDefault(c => c.Id == id);
+                            if (model != null)
+                            {
+                                accountStore.Add(model);
+                            }
+                        }
+                    }
+
+                    // user 迁移
+                    var liteUserIds = LiteDBHelper.UserStore.GetAllIds();
+                    var userStore = DbHelper.Instance.UserStore;
+                    var mongoUserIds = userStore.GetAllIds();
+                    var userIds = liteUserIds.Except(mongoUserIds).ToList();
+                    if (userIds.Count > 0)
+                    {
+                        var liteUsers = LiteDBHelper.UserStore.GetAll();
+                        foreach (var id in userIds)
+                        {
+                            var model = liteUsers.FirstOrDefault(c => c.Id == id);
+                            if (model != null)
+                            {
+                                userStore.Add(model);
+                            }
+                        }
+                    }
+
+                    // domain 迁移
+                    var liteDomainIds = LiteDBHelper.DomainStore.GetAllIds();
+                    var domainStore = DbHelper.Instance.DomainStore;
+                    var mongoDomainIds = domainStore.GetAllIds();
+                    var domainIds = liteDomainIds.Except(mongoDomainIds).ToList();
+                    if (domainIds.Count > 0)
+                    {
+                        var liteDomains = LiteDBHelper.DomainStore.GetAll();
+                        foreach (var id in domainIds)
+                        {
+                            var model = liteDomains.FirstOrDefault(c => c.Id == id);
+                            if (model != null)
+                            {
+                                domainStore.Add(model);
+                            }
+                        }
+                    }
+
+                    // banded 迁移
+                    var liteBannedIds = LiteDBHelper.BannedWordStore.GetAllIds();
+                    var bannedStore = DbHelper.Instance.BannedWordStore;
+                    var mongoBannedIds = bannedStore.GetAllIds();
+                    var bannedIds = liteBannedIds.Except(mongoBannedIds).ToList();
+                    if (bannedIds.Count > 0)
+                    {
+                        var liteBanneds = LiteDBHelper.BannedWordStore.GetAll();
+                        foreach (var id in bannedIds)
+                        {
+                            var model = liteBanneds.FirstOrDefault(c => c.Id == id);
+                            if (model != null)
+                            {
+                                bannedStore.Add(model);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "LiteDB 数据迁移基本信息异常");
+                }
+
+                // 迁移 task
+                try
+                {
+                    _ = Task.Run(() =>
+                    {
+                        TaskInfoAutoMigrate();
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "LiteDB 数据迁移任务信息异常");
+                }
+            }
+
+            // 迁移完后，再验证初始化数据
             try
             {
-                _applicationLifetime.ApplicationStarted.Register(() =>
+                // 初始化管理员用户
+                // 判断超管是否存在
+                var admin = DbHelper.Instance.UserStore.Get(Constants.ADMIN_USER_ID);
+                if (admin == null)
                 {
-                    // 更新检查
-                    Task.Run(async () =>
+                    admin = new User
                     {
-                        await UpgradeCheck();
-                    });
+                        Id = Constants.ADMIN_USER_ID,
+                        Name = Constants.ADMIN_USER_ID,
+                        Token = _configuration["AdminToken"],
+                        Role = EUserRole.ADMIN,
+                        Status = EUserStatus.NORMAL,
+                        IsWhite = true
+                    };
 
-                    // 官方下载下载器
-                    if (GlobalConfiguration.Setting.EnableOfficial)
+                    if (string.IsNullOrWhiteSpace(admin.Token))
                     {
-                        Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await LicenseKeyHelper.InitDonwloader();
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.Error(ex, "初始化官方业务异常");
-                            }
-                        });
+                        admin.Token = "admin";
                     }
 
-                    var setting = GlobalConfiguration.Setting;
+                    DbHelper.Instance.UserStore.Add(admin);
+                }
 
-                    // 初始化数据库索引
-                    DbHelper.Instance.IndexInit();
-
-                    // 是否开启 LiteDB 自动迁移
-                    if (setting.DatabaseType != DatabaseType.NONE && setting.DatabaseType != DatabaseType.LiteDB && setting.IsAutoMigrate)
+                // 初始化普通用户
+                var user = DbHelper.Instance.UserStore.Get(Constants.DEFAULT_USER_ID);
+                var userToken = _configuration["UserToken"];
+                if (user == null && !string.IsNullOrWhiteSpace(userToken))
+                {
+                    user = new User
                     {
-                        // 迁移 account user domain banded
-                        try
-                        {
-                            // 如果 liteAccountIds 的数据在 mongoAccountIds 不存在，则迁移到 mongodb
-                            // account 迁移
-                            var liteAccountIds = LiteDBHelper.AccountStore.GetAllIds();
-                            var accountStore = DbHelper.Instance.AccountStore;
-                            var mongoAccountIds = accountStore.GetAllIds();
-                            var accountIds = liteAccountIds.Except(mongoAccountIds).ToList();
-                            if (accountIds.Count > 0)
-                            {
-                                var liteAccounts = LiteDBHelper.AccountStore.GetAll();
-                                foreach (var id in accountIds)
-                                {
-                                    var model = liteAccounts.FirstOrDefault(c => c.Id == id);
-                                    if (model != null)
-                                    {
-                                        accountStore.Add(model);
-                                    }
-                                }
-                            }
+                        Id = Constants.DEFAULT_USER_ID,
+                        Name = Constants.DEFAULT_USER_ID,
+                        Token = userToken,
+                        Role = EUserRole.USER,
+                        Status = EUserStatus.NORMAL,
+                        IsWhite = true
+                    };
+                    DbHelper.Instance.UserStore.Add(user);
+                }
 
-                            // user 迁移
-                            var liteUserIds = LiteDBHelper.UserStore.GetAllIds();
-                            var userStore = DbHelper.Instance.UserStore;
-                            var mongoUserIds = userStore.GetAllIds();
-                            var userIds = liteUserIds.Except(mongoUserIds).ToList();
-                            if (userIds.Count > 0)
-                            {
-                                var liteUsers = LiteDBHelper.UserStore.GetAll();
-                                foreach (var id in userIds)
-                                {
-                                    var model = liteUsers.FirstOrDefault(c => c.Id == id);
-                                    if (model != null)
-                                    {
-                                        userStore.Add(model);
-                                    }
-                                }
-                            }
-
-                            // domain 迁移
-                            var liteDomainIds = LiteDBHelper.DomainStore.GetAllIds();
-                            var domainStore = DbHelper.Instance.DomainStore;
-                            var mongoDomainIds = domainStore.GetAllIds();
-                            var domainIds = liteDomainIds.Except(mongoDomainIds).ToList();
-                            if (domainIds.Count > 0)
-                            {
-                                var liteDomains = LiteDBHelper.DomainStore.GetAll();
-                                foreach (var id in domainIds)
-                                {
-                                    var model = liteDomains.FirstOrDefault(c => c.Id == id);
-                                    if (model != null)
-                                    {
-                                        domainStore.Add(model);
-                                    }
-                                }
-                            }
-
-                            // banded 迁移
-                            var liteBannedIds = LiteDBHelper.BannedWordStore.GetAllIds();
-                            var bannedStore = DbHelper.Instance.BannedWordStore;
-                            var mongoBannedIds = bannedStore.GetAllIds();
-                            var bannedIds = liteBannedIds.Except(mongoBannedIds).ToList();
-                            if (bannedIds.Count > 0)
-                            {
-                                var liteBanneds = LiteDBHelper.BannedWordStore.GetAll();
-                                foreach (var id in bannedIds)
-                                {
-                                    var model = liteBanneds.FirstOrDefault(c => c.Id == id);
-                                    if (model != null)
-                                    {
-                                        bannedStore.Add(model);
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Error(ex, "LiteDB 数据迁移基本信息异常");
-                        }
-
-                        // 迁移 task
-                        try
-                        {
-                            _ = Task.Run(() =>
-                            {
-                                TaskInfoAutoMigrate();
-                            });
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Error(ex, "LiteDB 数据迁移任务信息异常");
-                        }
-                    }
-
-                    // 迁移完后，再验证初始化数据
-                    try
+                // 初始化领域标签
+                var defaultDomain = DbHelper.Instance.DomainStore.Get(Constants.DEFAULT_DOMAIN_ID);
+                if (defaultDomain == null)
+                {
+                    defaultDomain = new DomainTag
                     {
-                        // 初始化管理员用户
-                        // 判断超管是否存在
-                        var admin = DbHelper.Instance.UserStore.Get(Constants.ADMIN_USER_ID);
-                        if (admin == null)
-                        {
-                            admin = new User
-                            {
-                                Id = Constants.ADMIN_USER_ID,
-                                Name = Constants.ADMIN_USER_ID,
-                                Token = _configuration["AdminToken"],
-                                Role = EUserRole.ADMIN,
-                                Status = EUserStatus.NORMAL,
-                                IsWhite = true
-                            };
+                        Id = Constants.DEFAULT_DOMAIN_ID,
+                        Name = "默认标签",
+                        Description = "",
+                        Sort = 0,
+                        Enable = true,
+                        Keywords = WordsUtils.GetWords()
+                    };
+                    DbHelper.Instance.DomainStore.Add(defaultDomain);
+                }
 
-                            if (string.IsNullOrWhiteSpace(admin.Token))
-                            {
-                                admin.Token = "admin";
-                            }
-
-                            DbHelper.Instance.UserStore.Add(admin);
-                        }
-
-                        // 初始化普通用户
-                        var user = DbHelper.Instance.UserStore.Get(Constants.DEFAULT_USER_ID);
-                        var userToken = _configuration["UserToken"];
-                        if (user == null && !string.IsNullOrWhiteSpace(userToken))
-                        {
-                            user = new User
-                            {
-                                Id = Constants.DEFAULT_USER_ID,
-                                Name = Constants.DEFAULT_USER_ID,
-                                Token = userToken,
-                                Role = EUserRole.USER,
-                                Status = EUserStatus.NORMAL,
-                                IsWhite = true
-                            };
-                            DbHelper.Instance.UserStore.Add(user);
-                        }
-
-                        // 初始化领域标签
-                        var defaultDomain = DbHelper.Instance.DomainStore.Get(Constants.DEFAULT_DOMAIN_ID);
-                        if (defaultDomain == null)
-                        {
-                            defaultDomain = new DomainTag
-                            {
-                                Id = Constants.DEFAULT_DOMAIN_ID,
-                                Name = "默认标签",
-                                Description = "",
-                                Sort = 0,
-                                Enable = true,
-                                Keywords = WordsUtils.GetWords()
-                            };
-                            DbHelper.Instance.DomainStore.Add(defaultDomain);
-                        }
-
-                        // 完整标签
-                        var fullDomain = DbHelper.Instance.DomainStore.Get(Constants.DEFAULT_DOMAIN_FULL_ID);
-                        if (fullDomain == null)
-                        {
-                            fullDomain = new DomainTag
-                            {
-                                Id = Constants.DEFAULT_DOMAIN_FULL_ID,
-                                Name = "默认完整标签",
-                                Description = "",
-                                Sort = 0,
-                                Enable = true,
-                                Keywords = WordsUtils.GetWordsFull()
-                            };
-                            DbHelper.Instance.DomainStore.Add(fullDomain);
-                        }
-
-                        // 违规词
-                        var bannedWord = DbHelper.Instance.BannedWordStore.Get(Constants.DEFAULT_BANNED_WORD_ID);
-                        if (bannedWord == null)
-                        {
-                            bannedWord = new BannedWord
-                            {
-                                Id = Constants.DEFAULT_BANNED_WORD_ID,
-                                Name = "默认违规词",
-                                Description = "",
-                                Sort = 0,
-                                Enable = true,
-                                Keywords = BannedPromptUtils.GetStrings()
-                            };
-                            DbHelper.Instance.BannedWordStore.Add(bannedWord);
-                        }
-                    }
-                    catch (Exception ex)
+                // 完整标签
+                var fullDomain = DbHelper.Instance.DomainStore.Get(Constants.DEFAULT_DOMAIN_FULL_ID);
+                if (fullDomain == null)
+                {
+                    fullDomain = new DomainTag
                     {
-                        _logger.Error(ex, "初始化基本信息异常");
-                    }
+                        Id = Constants.DEFAULT_DOMAIN_FULL_ID,
+                        Name = "默认完整标签",
+                        Description = "",
+                        Sort = 0,
+                        Enable = true,
+                        Keywords = WordsUtils.GetWordsFull()
+                    };
+                    DbHelper.Instance.DomainStore.Add(fullDomain);
+                }
 
-                    _timer = new Timer(DoWork, null, TimeSpan.Zero, TimeSpan.FromMinutes(1));
-                });
-
-                await Task.CompletedTask;
+                // 违规词
+                var bannedWord = DbHelper.Instance.BannedWordStore.Get(Constants.DEFAULT_BANNED_WORD_ID);
+                if (bannedWord == null)
+                {
+                    bannedWord = new BannedWord
+                    {
+                        Id = Constants.DEFAULT_BANNED_WORD_ID,
+                        Name = "默认违规词",
+                        Description = "",
+                        Sort = 0,
+                        Enable = true,
+                        Keywords = BannedPromptUtils.GetStrings()
+                    };
+                    DbHelper.Instance.BannedWordStore.Add(bannedWord);
+                }
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "启动异常");
+                _logger.Error(ex, "初始化基本信息异常");
             }
+
+            _timer = new Timer(DoWork, null, TimeSpan.Zero, TimeSpan.FromMinutes(1));
+
+            await Task.CompletedTask;
         }
 
         /// <summary>
@@ -374,23 +348,34 @@ namespace Midjourney.API
 
             try
             {
-                // 更新检查
-                await UpgradeCheck();
-
                 var isLock = await AsyncLocalLock.TryLockAsync("DoWork", TimeSpan.FromSeconds(10), async () =>
                 {
                     try
                     {
-                        var now = new DateTimeOffset(DateTime.Now.Date).ToUnixTimeMilliseconds();
+                        // 每日 0 点清除用户日绘图统计
+                        if (_userDayReset == null || _userDayReset.Value.Date != DateTime.Now.Date)
+                        {
+                            // 获取日绘图数量 > 0 的用户
+                            var users = DbHelper.Instance.UserStore.Where(c => c.DayDrawCount > 0).ToList();
+                            foreach (var user in users)
+                            {
+                                user.DayDrawCount = 0;
+                                DbHelper.Instance.UserStore.Update("DayDrawCount", user);
+                            }
 
-                        GlobalConfiguration.TodayDraw = (int)DbHelper.Instance.TaskStore.Count(x => x.SubmitTime >= now);
-                        GlobalConfiguration.TotalDraw = (int)DbHelper.Instance.TaskStore.Count(x => true);
+                            _userDayReset = DateTime.Now.Date;
+                        }
 
-                        // 验证许可
-                        await LicenseKeyHelper.Validate();
 
-                        // 初始化
-                        await Initialize();
+                        // 本地配置中的默认账号
+                        var configAccounts = _properties.Accounts.ToList();
+                        if (!string.IsNullOrEmpty(_properties.Discord?.ChannelId)
+                        && !_properties.Discord.ChannelId.Contains("*"))
+                        {
+                            configAccounts.Add(_properties.Discord);
+                        }
+
+                        await Initialize(configAccounts.ToArray());
 
                         // 检查并删除旧的文档
                         CheckAndDeleteOldDocuments();
@@ -415,36 +400,6 @@ namespace Midjourney.API
         }
 
         /// <summary>
-        /// 执行更新检查并下载最新版本
-        /// </summary>
-        /// <returns></returns>
-        public async Task UpgradeCheck()
-        {
-            try
-            {
-                if (GlobalConfiguration.Setting.EnableUpdateCheck)
-                {
-                    if (_upgradeTime == null || (DateTime.Now - _upgradeTime.Value).TotalHours > 1)
-                    {
-                        _upgradeTime = DateTime.Now;
-
-                        _logger.Information("开始检查更新...");
-
-                        var last = await _upgradeService.CheckForUpdatesAsync();
-                        if (last.HasUpdate)
-                        {
-                            await _upgradeService.StartDownloadAsync();
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "更新检查执行失败");
-            }
-        }
-
-        /// <summary>
         /// 检查并删除旧文档
         /// </summary>
         public static void CheckAndDeleteOldDocuments()
@@ -462,7 +417,6 @@ namespace Midjourney.API
             {
                 case DatabaseType.NONE:
                     break;
-
                 case DatabaseType.LiteDB:
                     {
                         var documentCount = DbHelper.Instance.TaskStore.Count();
@@ -481,7 +435,6 @@ namespace Midjourney.API
                         }
                     }
                     break;
-
                 case DatabaseType.MongoDB:
                     {
                         var coll = MongoHelper.GetCollection<TaskInfo>();
@@ -497,7 +450,6 @@ namespace Midjourney.API
                         }
                     }
                     break;
-
                 case DatabaseType.SQLite:
                 case DatabaseType.MySQL:
                 case DatabaseType.PostgreSQL:
@@ -522,7 +474,6 @@ namespace Midjourney.API
                         }
                     }
                     break;
-
                 default:
                     break;
             }
@@ -532,7 +483,7 @@ namespace Midjourney.API
         /// 初始化所有账号
         /// </summary>
         /// <returns></returns>
-        public async Task Initialize()
+        public async Task Initialize(params DiscordAccountConfig[] appends)
         {
             var isLock = await AsyncLocalLock.TryLockAsync("initialize:all", TimeSpan.FromSeconds(10), async () =>
             {
@@ -540,12 +491,29 @@ namespace Midjourney.API
 
                 var accounts = db.GetAll().OrderBy(c => c.Sort).ToList();
 
+                // 将启动配置中的 account 添加到数据库
+                var configAccounts = new List<DiscordAccountConfig>();
+                if (appends?.Length > 0)
+                {
+                    configAccounts.AddRange(appends);
+                }
+
+                foreach (var configAccount in configAccounts)
+                {
+                    var account = accounts.FirstOrDefault(c => c.ChannelId == configAccount.ChannelId);
+                    if (account == null)
+                    {
+                        account = DiscordAccount.Create(configAccount);
+                        db.Add(account);
+
+                        accounts.Add(account);
+                    }
+                }
+
                 foreach (var account in accounts)
                 {
                     try
                     {
-                        DrawCounter.InitAccountTodayCounter(account.ChannelId);
-
                         await StartCheckAccount(account, false);
                     }
                     catch (Exception ex)
@@ -566,7 +534,6 @@ namespace Midjourney.API
 
                 _logger.Information("当前可用账号数 [{@0}] - {@1}", enableInstanceIds.Count, string.Join(", ", enableInstanceIds));
             });
-
             if (!isLock)
             {
                 _logger.Warning("初始化所有账号中，请稍后重试...");
@@ -607,7 +574,7 @@ namespace Midjourney.API
                     account = db.Get(account.Id)!;
 
                     // 如果账号处于登录中
-                    if (account.IsAutoLogining && !account.IsYouChuan && !account.IsOfficial)
+                    if (account.IsAutoLogining)
                     {
                         // 如果超过 10 分钟
                         if (account.LoginStart.HasValue && account.LoginStart.Value.AddMinutes(10) < DateTime.Now)
@@ -635,7 +602,7 @@ namespace Midjourney.API
                     sw.Restart();
 
                     // 随机延期token
-                    if (setting.EnableAutoExtendToken && !account.IsYouChuan && !account.IsOfficial)
+                    if (setting.EnableAutoExtendToken)
                     {
                         await RandomSyncToken(account);
                         sw.Stop();
@@ -675,7 +642,7 @@ namespace Midjourney.API
                             }
 
                             // 启用自动获取私信 ID
-                            if (setting.EnableAutoGetPrivateId && !account.IsYouChuan && !account.IsOfficial)
+                            if (setting.EnableAutoGetPrivateId)
                             {
                                 try
                                 {
@@ -726,7 +693,7 @@ namespace Midjourney.API
 
                             // 启用自动验证账号功能
                             // 连接前先判断账号是否正常
-                            if (setting.EnableAutoVerifyAccount && !account.IsYouChuan && !account.IsOfficial)
+                            if (setting.EnableAutoVerifyAccount)
                             {
                                 var success = await _discordAccountHelper.ValidateAccount(account);
                                 if (!success)
@@ -751,28 +718,27 @@ namespace Midjourney.API
                             // 多账号启动时，等待一段时间再启动下一个账号
                             await Task.Delay(1000 * 5);
 
-                            if (!account.IsYouChuan && !account.IsOfficial)
+
+                            try
                             {
-                                try
-                                {
-                                    // 启动后执行 info setting 操作
-                                    await _taskService.InfoSetting(account.Id);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.Error(ex, "同步 info 异常 {@0}", account.ChannelId);
-
-                                    info.AppendLine($"{account.Id}初始化中... 同步 info 异常");
-                                }
-
-                                sw.Stop();
-                                info.AppendLine($"{account.Id}初始化中... 同步 info 耗时: {sw.ElapsedMilliseconds}ms");
-                                sw.Restart();
+                                // 启动后执行 info setting 操作
+                                await _taskService.InfoSetting(account.Id);
                             }
+                            catch (Exception ex)
+                            {
+                                _logger.Error(ex, "同步 info 异常 {@0}", account.ChannelId);
+
+                                info.AppendLine($"{account.Id}初始化中... 同步 info 异常");
+                            }
+
+                            sw.Stop();
+                            info.AppendLine($"{account.Id}初始化中... 同步 info 耗时: {sw.ElapsedMilliseconds}ms");
+                            sw.Restart();
+
                         }
 
                         // 慢速切换快速模式检查
-                        if (account.EnableRelaxToFast == true && !account.IsYouChuan && !account.IsOfficial)
+                        if (account.EnableRelaxToFast == true)
                         {
                             await disInstance?.RelaxToFastValidate();
                             sw.Stop();
@@ -781,23 +747,13 @@ namespace Midjourney.API
                         }
 
                         // 启用自动同步信息和设置
-                        if (setting.EnableAutoSyncInfoSetting && !account.IsYouChuan && !account.IsOfficial)
+                        if (setting.EnableAutoSyncInfoSetting)
                         {
                             // 每 6~12 小时，同步账号信息
                             await disInstance?.RandomSyncInfo();
                             sw.Stop();
                             info.AppendLine($"{account.Id}初始化中... 随机同步信息耗时: {sw.ElapsedMilliseconds}ms");
                             sw.Restart();
-                        }
-
-                        if (account.IsYouChuan)
-                        {
-                            await disInstance?.YouChuanSyncInfo();
-                        }
-
-                        if (account.IsOfficial)
-                        {
-                            await disInstance?.OfficialSyncInfo();
                         }
                     }
                     else
@@ -826,7 +782,7 @@ namespace Midjourney.API
 
                     _logger.Error(ex, "Account({@0}) init fail, disabled: {@1}", account.ChannelId, ex.Message);
 
-                    if (setting.EnableAutoLogin && !account.IsYouChuan && !account.IsOfficial)
+                    if (setting.EnableAutoLogin)
                     {
                         sw.Stop();
                         info.AppendLine($"{account.Id}尝试自动登录...");
@@ -988,12 +944,6 @@ namespace Midjourney.API
                 //model.ChannelId = account.ChannelId;
                 //model.GuildId = account.GuildId;
 
-                // 清空禁用原因
-                if (model.IsYouChuan || model.IsOfficial)
-                {
-                    model.DisabledReason = null;
-                }
-
                 // 更新账号重连时，自动解锁
                 model.Lock = false;
                 model.CfHashCreated = null;
@@ -1001,9 +951,9 @@ namespace Midjourney.API
                 model.CfUrl = null;
 
                 // 验证 Interval
-                if (param.Interval < 0m)
+                if (param.Interval < 1.2m)
                 {
-                    param.Interval = 0m;
+                    param.Interval = 1.2m;
                 }
 
                 // 最大并行数
@@ -1040,6 +990,7 @@ namespace Midjourney.API
                 model.LoginEnd = null;
                 model.LoginMessage = null;
 
+
                 model.EnableAutoSetRelax = param.EnableAutoSetRelax;
                 model.EnableRelaxToFast = param.EnableRelaxToFast;
                 model.EnableFastToRelax = param.EnableFastToRelax;
@@ -1068,9 +1019,7 @@ namespace Midjourney.API
                 model.RemixAutoSubmit = param.RemixAutoSubmit;
                 model.CoreSize = param.CoreSize;
                 model.QueueSize = param.QueueSize;
-                model.RelaxQueueSize = param.RelaxQueueSize;
-                model.RelaxCoreSize = param.RelaxCoreSize;
-
+                model.MaxQueueSize = param.MaxQueueSize;
                 model.TimeoutMinutes = param.TimeoutMinutes;
                 model.Weight = param.Weight;
                 model.Remark = param.Remark;
@@ -1103,6 +1052,7 @@ namespace Midjourney.API
         {
             _memoryCache.Remove($"account:{id}");
         }
+
 
         /// <summary>
         /// 更新并重新连接账号

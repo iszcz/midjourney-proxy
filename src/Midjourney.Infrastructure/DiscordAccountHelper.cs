@@ -22,13 +22,18 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited.
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using System.Net;
-using System.Text.Json;
 using Microsoft.Extensions.Caching.Memory;
+using Midjourney.Infrastructure.Data;
+using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.Handle;
 using Midjourney.Infrastructure.LoadBalancer;
+using Midjourney.Infrastructure.Services;
+using Org.BouncyCastle.Cms;
 using RestSharp;
 using Serilog;
+using System.Net;
+using System.Reflection;
+using System.Text.Json;
 
 namespace Midjourney.Infrastructure
 {
@@ -38,6 +43,8 @@ namespace Midjourney.Infrastructure
     public class DiscordAccountHelper
     {
         private readonly DiscordHelper _discordHelper;
+        private readonly ProxyProperties _properties;
+
         private readonly ITaskStoreService _taskStoreService;
         private readonly INotifyService _notifyService;
 
@@ -46,6 +53,7 @@ namespace Midjourney.Infrastructure
         private readonly Dictionary<string, string> _paramsMap;
         private readonly IMemoryCache _memoryCache;
         private readonly ITaskService _taskService;
+        private readonly IPromptReviewService _promptReviewService;
 
         public DiscordAccountHelper(
             DiscordHelper discordHelper,
@@ -54,8 +62,10 @@ namespace Midjourney.Infrastructure
             INotifyService notifyService,
             IEnumerable<UserMessageHandler> userMessageHandlers,
             IMemoryCache memoryCache,
-            ITaskService taskService)
+            ITaskService taskService,
+            IPromptReviewService promptReviewService)
         {
+            _properties = GlobalConfiguration.Setting;
             _discordHelper = discordHelper;
             _taskStoreService = taskStoreService;
             _notifyService = notifyService;
@@ -64,7 +74,7 @@ namespace Midjourney.Infrastructure
             _memoryCache = memoryCache;
 
             var paramsMap = new Dictionary<string, string>();
-            var assembly = typeof(GlobalConfiguration).Assembly; // Assembly.GetExecutingAssembly();
+            var assembly = Assembly.GetExecutingAssembly();
             var assemblyName = assembly.GetName().Name;
             var resourceNames = assembly.GetManifestResourceNames()
                 .Where(name => name.EndsWith(".json") && name.Contains("Resources.ApiParams"))
@@ -82,10 +92,9 @@ namespace Midjourney.Infrastructure
                 paramsMap[fileKey] = paramsContent;
             }
 
-            GlobalConfiguration.ResourcesParamsMap = paramsMap;
-
             _paramsMap = paramsMap;
             _taskService = taskService;
+            _promptReviewService = promptReviewService;
         }
 
         /// <summary>
@@ -96,12 +105,9 @@ namespace Midjourney.Infrastructure
         /// <exception cref="ArgumentException">当guildId, channelId或userToken为空时抛出。</exception>
         public async Task<DiscordInstance> CreateDiscordInstance(DiscordAccount account)
         {
-            if (!account.IsYouChuan && !account.IsOfficial)
+            if (string.IsNullOrWhiteSpace(account.GuildId) || string.IsNullOrWhiteSpace(account.ChannelId) || string.IsNullOrWhiteSpace(account.UserToken))
             {
-                if (string.IsNullOrWhiteSpace(account.GuildId) || string.IsNullOrWhiteSpace(account.ChannelId) || string.IsNullOrWhiteSpace(account.UserToken))
-                {
-                    throw new ArgumentException("guildId, channelId, userToken must not be blank");
-                }
+                throw new ArgumentException("guildId, channelId, userToken must not be blank");
             }
 
             if (string.IsNullOrWhiteSpace(account.UserAgent))
@@ -110,11 +116,10 @@ namespace Midjourney.Infrastructure
             }
 
             // Bot 消息监听器
-            var setting = GlobalConfiguration.Setting;
             WebProxy webProxy = null;
-            if (!string.IsNullOrEmpty(setting.Proxy?.Host))
+            if (!string.IsNullOrEmpty(_properties.Proxy?.Host))
             {
-                webProxy = new WebProxy(setting.Proxy.Host, setting.Proxy.Port ?? 80);
+                webProxy = new WebProxy(_properties.Proxy.Host, _properties.Proxy.Port ?? 80);
             }
 
             var discordInstance = new DiscordInstance(
@@ -129,37 +134,23 @@ namespace Midjourney.Infrastructure
 
             if (account.Enable == true)
             {
-                if (account.IsYouChuan)
-                {
-                    if (string.IsNullOrWhiteSpace(account.UserToken))
-                    {
-                        await discordInstance.YouChuanLogin();
-                    }
-                }
-                else if (account.IsOfficial)
-                {
+                // bot 消息监听
+                var messageListener = new BotMessageListener(_discordHelper, webProxy, _promptReviewService, _taskService, _taskStoreService);
+                messageListener.Init(discordInstance, _botMessageHandlers, _userMessageHandlers);
+                await messageListener.StartAsync();
 
-                }
-                else
-                {
-                    // bot 消息监听
-                    var messageListener = new BotMessageListener(_discordHelper, webProxy);
-                    messageListener.Init(discordInstance, _botMessageHandlers, _userMessageHandlers);
-                    await messageListener.StartAsync();
+                // 用户 WebSocket 连接
+                var webSocket = new WebSocketManager(
+                    _discordHelper,
+                    messageListener,
+                    webProxy,
+                    discordInstance,
+                    _memoryCache);
+                await webSocket.StartAsync();
 
-                    // 用户 WebSocket 连接
-                    var webSocket = new WebSocketManager(
-                        _discordHelper,
-                        messageListener,
-                        webProxy,
-                        discordInstance,
-                        _memoryCache);
-                    await webSocket.StartAsync();
-
-                    // 跟踪 wss 连接
-                    discordInstance.BotMessageListener = messageListener;
-                    discordInstance.WebSocketManager = webSocket;
-                }
+                // 跟踪 wss 连接
+                discordInstance.BotMessageListener = messageListener;
+                discordInstance.WebSocketManager = webSocket;
             }
 
             return discordInstance;
@@ -179,10 +170,9 @@ namespace Midjourney.Infrastructure
             }
 
             WebProxy webProxy = null;
-            var setting = GlobalConfiguration.Setting;
-            if (!string.IsNullOrEmpty(setting.Proxy?.Host))
+            if (!string.IsNullOrEmpty(_properties.Proxy?.Host))
             {
-                webProxy = new WebProxy(setting.Proxy.Host, setting.Proxy.Port ?? 80);
+                webProxy = new WebProxy(_properties.Proxy.Host, _properties.Proxy.Port ?? 80);
             }
 
             var hch = new HttpClientHandler
@@ -236,10 +226,9 @@ namespace Midjourney.Infrastructure
             }
 
             WebProxy webProxy = null;
-            var setting = GlobalConfiguration.Setting;
-            if (!string.IsNullOrEmpty(setting.Proxy?.Host))
+            if (!string.IsNullOrEmpty(_properties.Proxy?.Host))
             {
-                webProxy = new WebProxy(setting.Proxy.Host, setting.Proxy.Port ?? 80);
+                webProxy = new WebProxy(_properties.Proxy.Host, _properties.Proxy.Port ?? 80);
             }
 
             var hch = new HttpClientHandler

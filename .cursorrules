@@ -103,6 +103,13 @@ Task completed: Implemented priority queue system where upscale tasks are proces
 - ✅ Ensure imageUrls are saved to database and included in callbacks and queries automatically
 Task completed: Added imageUrls field to TaskInfo for IMAGINE tasks to provide easy access to individual image URLs
 
+[2024-12-21] Task: Fix AnimateModal BadRequest error in VIDEO operations
+- ✅ Analyze BadRequest error with custom_id "MJ::AnimateModal::634d92ee-4a56-46d0-a296-d8f5f00d4bf8::1::high:0"
+- ✅ Identify issue in TaskService.cs line 1041 where parts[2].Split('_')[1] fails when parts[2] is already "high" instead of "animate_high"
+- ✅ Fix AnimateModal custom_id conversion logic to handle both original format (MJ::JOB::animate_high::...) and already converted format (MJ::AnimateModal::...)
+- ✅ Add defensive check to prevent double conversion and handle cases where custom_id doesn't contain underscore
+Task completed: Fixed AnimateModal BadRequest error by improving custom_id format detection and conversion logic
+
 # Learned Knowledge
 ## Technical Knowledge
 [2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
@@ -123,6 +130,8 @@ Task completed: Added imageUrls field to TaskInfo for IMAGINE tasks to provide e
 [2024-05-09] Investigated NullReferenceException in `TaskService.SubmitSeed`. Probable cause: The `TaskInfo` object passed to `SubmitSeed` is null, or one of its critical properties (e.g., `Id` for `jobId`, `Nonce`, or properties determining `BotType`) required for the seed operation is null. This can happen if the task retrieval in `TaskController.ImageSeed` fails or returns incomplete data. Recommended checking data retrieval logic for `TaskInfo` and ensuring all necessary fields are populated before or within `SubmitSeed` at line 1138 of `TaskService.cs`.
 
 [2024-05-10] Corrected `RelaxAsync` in `DiscordInstance.cs` to use the correct `_paramsMap` key based on `botType`, addressing a BadRequest error. The logic for selecting `relax` vs `relaxniji` parameters was inverted.
+
+[2024-12-21] Fixed AnimateModal BadRequest error in TaskService.cs. The custom_id conversion logic assumed input format was always "MJ::JOB::animate_high::..." but sometimes received already converted format "MJ::AnimateModal::...". Added format detection to prevent double conversion and handle cases where action type doesn't contain underscore. This prevents "parts[2].Split('_')[1]" from throwing IndexOutOfRangeException when parts[2] is already "high" instead of "animate_high".
 
 # Project Guidelines
 [2024-05-04] For content moderation:
@@ -181,4 +190,6 @@ Task completed: Added imageUrls field to TaskInfo for IMAGINE tasks to provide e
 [2024-12-19] Priority queue processing logic should check priority tasks first in each iteration rather than exhaustively processing all priority tasks before moving to regular tasks. This prevents resource starvation and ensures fair processing when both priority and regular tasks compete for limited resources.
 [2024-12-19] Upscale-related tasks come in different forms: MJ::JOB::upsample:: (basic upscale) and MJ::JOB::upsample_ (high-quality upscale variants like 2x subtle/creative). All upscale variations should be treated as priority tasks for consistent user experience. 
 
-[2024-12-19] For TaskInfo model extensions, new fields should use JsonMap attribute for complex objects and be initialized with default values in the constructor or property declaration to ensure proper serialization and database storage. 
+[2024-12-19] For TaskInfo model extensions, new fields should use JsonMap attribute for complex objects and be initialized with default values in the constructor or property declaration to ensure proper serialization and database storage.
+
+[2024-12-21] When processing custom_id transformations for Discord interactions, always validate the input format before attempting string manipulations like Split(). Different entry points may provide custom_ids in various stages of transformation (original vs converted), so defensive coding with format detection prevents runtime errors. For VIDEO/animate operations, custom_ids can be in format "MJ::JOB::animate_high::..." (original) or "MJ::AnimateModal::..." (already converted). 

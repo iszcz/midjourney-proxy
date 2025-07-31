@@ -88,14 +88,8 @@ namespace Midjourney.Infrastructure.LoadBalancer
             // 计算每个实例的队列利用情况
             var instanceMetrics = instances.Select(instance =>
             {
-                int queuedTasks = instance.GetQueueTaskCount;
+                int queuedTasks = instance.GetQueueTasks().Count;
                 int queueSize = instance.Account.QueueSize;
-
-                // 双队列
-                if (instance.Account.IsYouChuan)
-                {
-                    queueSize = instance.Account.QueueSize + instance.Account.RelaxQueueSize;
-                }
 
                 // 计算队列利用率
                 double queueUtilization = queueSize > 0 ? (double)queuedTasks / queueSize : 1.0;

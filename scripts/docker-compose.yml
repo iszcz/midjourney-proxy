@@ -5,6 +5,7 @@ services:
     container_name: mjopen-rix
     restart: always
     environment:
+      - DEMO=true
       - TZ=Asia/Shanghai
     ports:
       - "8086:8080"
@@ -13,5 +14,6 @@ services:
       - /root/mjopen/data:/app/data:rw
       - /root/mjopen/attachments:/app/wwwroot/attachments:rw
       - /root/mjopen/ephemeral-attachments:/app/wwwroot/ephemeral-attachments:rw
+      - /root/mjopen/appsettings.Production.json:/app/appsettings.Production.json:ro
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro

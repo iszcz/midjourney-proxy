@@ -22,8 +22,11 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited. 
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using System.Diagnostics;
 using Microsoft.Extensions.Caching.Memory;
+using Midjourney.Infrastructure.Dto;
+using Midjourney.Infrastructure.Services;
+using Midjourney.Infrastructure.Util;
+using System.Diagnostics;
 
 namespace Midjourney.Infrastructure.LoadBalancer
 {
@@ -470,7 +473,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                             if (res.Output is string output && !string.IsNullOrEmpty(output))
                             {
                                 info.ImageUrl = output;
-                                await info.SuccessAsync();
+                                info.Success();
                                 SaveAndNotify(info);
                                 return;
                             }

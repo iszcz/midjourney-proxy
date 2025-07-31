@@ -22,17 +22,18 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited.
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using System.Diagnostics;
-using System.Globalization;
-using System.Text.RegularExpressions;
-using Amazon.Runtime.Internal.Endpoints.StandardLibrary;
 using Microsoft.Extensions.Caching.Memory;
-using Midjourney.Base.Storage;
+using Midjourney.Infrastructure.Data;
+using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.LoadBalancer;
+using Midjourney.Infrastructure.Util;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RestSharp;
 using Serilog;
+using System.Diagnostics;
+using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace Midjourney.Infrastructure.Services
 {
@@ -139,406 +140,97 @@ namespace Midjourney.Infrastructure.Services
         }
 
         /// <summary>
+        /// 验证并清理违规词
+        /// </summary>
+        /// <param name="promptEn">输入的提示词</param>
+        /// <returns>清理后的提示词</returns>
+        public string CheckAndCleanBanned(string promptEn)
+        {
+            if (string.IsNullOrWhiteSpace(promptEn))
+                return promptEn;
+                
+            var result = promptEn;
+            var finalPromptEn = promptEn.ToLower(CultureInfo.InvariantCulture);
+
+            var dic = GetBannedWordsCache();
+            foreach (var item in dic)
+            {
+                foreach (string word in item.Value)
+                {
+                    var regex = new Regex($"\\b{Regex.Escape(word)}\\b", RegexOptions.IgnoreCase);
+                    while (true)
+                    {
+                        var match = regex.Match(finalPromptEn);
+                        if (!match.Success)
+                            break;
+                            
+                        // 找到原始文本中对应的位置
+                        int index = finalPromptEn.IndexOf(word, StringComparison.OrdinalIgnoreCase);
+                        
+                        if (index >= 0)
+                        {
+                            // 从原始文本和小写文本中删除匹配的词
+                            result = result.Remove(index, word.Length);
+                            finalPromptEn = finalPromptEn.Remove(index, word.Length);
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            return result;
+        }
+
+        /// <summary>
         /// 提交 imagine 任务。
         /// </summary>
         /// <param name="info"></param>
         /// <param name="dataUrls"></param>
         /// <returns></returns>
-        public SubmitResultVO SubmitImagine(TaskInfo info, List<DataUrl> dataUrls)
+        public SubmitResultVO SubmitImagine(TaskInfo info, List<DataUrl> dataUrls, DiscordInstance instance)
         {
-            // 判断是否开启垂直领域
-            var domainIds = new List<string>();
-            var isDomain = GlobalConfiguration.Setting.IsVerticalDomain;
-            if (isDomain)
-            {
-                // 对 Promat 分割为单个单词
-                // 以 ',' ' ' '.' '-' 为分隔符
-                // 并且过滤为空的字符串
-                var prompts = info.Prompt.Split(new char[] { ',', ' ', '.', '-' })
-                    .Where(c => !string.IsNullOrWhiteSpace(c))
-                    .Select(c => c?.Trim()?.ToLower())
-                    .Distinct().ToList();
-
-                var domains = GetDomainCache();
-                foreach (var prompt in prompts)
-                {
-                    foreach (var domain in domains)
-                    {
-                        if (domain.Value.Contains(prompt) || domain.Value.Contains($"{prompt}s"))
-                        {
-                            domainIds.Add(domain.Key);
-                        }
-                    }
-                }
-
-                // 如果没有找到领域，则不使用领域账号
-                if (domainIds.Count == 0)
-                {
-                    isDomain = false;
-                }
-            }
-
-            var instance = _discordLoadBalancer.ChooseInstance(info.AccountFilter,
-                isNewTask: true,
-                botType: info.RealBotType ?? info.BotType,
-                isDomain: isDomain,
-                domainIds: domainIds,
-                preferredSpeedMode: info.Mode);
-
-            if (instance == null || !instance.Account.IsAcceptNewTask)
-            {
-                if (isDomain && domainIds.Count > 0)
-                {
-                    // 说明没有获取到符合领域的账号，再次获取不带领域的账号
-                    instance = _discordLoadBalancer.ChooseInstance(info.AccountFilter,
-                        isNewTask: true,
-                        botType: info.RealBotType ?? info.BotType,
-                        isDomain: false,
-                        preferredSpeedMode: info.Mode);
-                }
-            }
-
-            if (instance == null || instance?.Account?.IsAcceptNewTask != true)
-            {
-                return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
-            }
-            if (!instance.Account.IsValidateModeContinueDrawing(info.Mode, info.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!instance.IsIdleQueue(mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
-            }
-
-            info.IsPartner = instance.Account.IsYouChuan;
-            info.IsOfficial = instance.Account.IsOfficial;
-            info.Mode = mode;
             info.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, instance.ChannelId);
             info.InstanceId = instance.ChannelId;
 
             return instance.SubmitTaskAsync(info, async () =>
             {
-                if (instance.Account.IsYouChuan || instance.Account.IsOfficial)
+                var imageUrls = new List<string>();
+                foreach (var dataUrl in dataUrls)
                 {
-                    var imageUrls = new List<string>();
-                    foreach (var dataUrl in dataUrls)
+                    var taskFileName = $"{info.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
+                    var uploadResult = await instance.UploadAsync(taskFileName, dataUrl);
+                    if (uploadResult.Code != ReturnCode.SUCCESS)
                     {
-                        if (instance.Account.IsYouChuan)
-                        {
-                            var link = "";
-                            // 悠船
-                            if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                            {
-                                link = dataUrl.Url;
-                            }
-                            else
-                            {
-                                var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                                link = await instance.YmTaskService.UploadFileAsync(info, dataUrl.Data, taskFileName);
-                            }
-
-                            imageUrls.Add(link);
-                        }
-                        else
-                        {
-                            var taskFileName = $"{info.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                            var uploadResult = await instance.UploadAsync(taskFileName, dataUrl);
-                            if (uploadResult.Code != ReturnCode.SUCCESS)
-                            {
-                                return Message.Of(uploadResult.Code, uploadResult.Description);
-                            }
-
-                            if (uploadResult.Description.StartsWith("http"))
-                            {
-                                imageUrls.Add(uploadResult.Description);
-                            }
-                            else
-                            {
-                                var finalFileName = uploadResult.Description;
-                                var sendImageResult = await instance.SendImageMessageAsync("upload image: " + finalFileName, finalFileName);
-                                if (sendImageResult.Code != ReturnCode.SUCCESS)
-                                {
-                                    return Message.Of(sendImageResult.Code, sendImageResult.Description);
-                                }
-                                imageUrls.Add(sendImageResult.Description);
-                            }
-                        }
+                        return Message.Of(uploadResult.Code, uploadResult.Description);
                     }
 
-                    if (imageUrls.Any())
+                    if (uploadResult.Description.StartsWith("http"))
                     {
-                        info.Prompt = string.Join(" ", imageUrls) + " " + info.Prompt;
-                        info.PromptEn = string.Join(" ", imageUrls) + " " + info.PromptEn;
-                        info.Description = "/imagine " + info.Prompt;
-                        _taskStoreService.Save(info);
-                    }
-
-                    return await instance.YmTaskService.SubmitTaskAsync(info, _taskStoreService, instance);
-                }
-                else
-                {
-                    var imageUrls = new List<string>();
-                    foreach (var dataUrl in dataUrls)
-                    {
-                        var taskFileName = $"{info.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                        var uploadResult = await instance.UploadAsync(taskFileName, dataUrl);
-                        if (uploadResult.Code != ReturnCode.SUCCESS)
-                        {
-                            return Message.Of(uploadResult.Code, uploadResult.Description);
-                        }
-
-                        if (uploadResult.Description.StartsWith("http"))
-                        {
-                            imageUrls.Add(uploadResult.Description);
-                        }
-                        else
-                        {
-                            var finalFileName = uploadResult.Description;
-                            var sendImageResult = await instance.SendImageMessageAsync("upload image: " + finalFileName, finalFileName);
-                            if (sendImageResult.Code != ReturnCode.SUCCESS)
-                            {
-                                return Message.Of(sendImageResult.Code, sendImageResult.Description);
-                            }
-                            imageUrls.Add(sendImageResult.Description);
-                        }
-                    }
-                    if (imageUrls.Any())
-                    {
-                        info.Prompt = string.Join(" ", imageUrls) + " " + info.Prompt;
-                        info.PromptEn = string.Join(" ", imageUrls) + " " + info.PromptEn;
-                        info.Description = "/imagine " + info.Prompt;
-                        _taskStoreService.Save(info);
-                    }
-                    return await instance.ImagineAsync(info, info.PromptEn,
-                        info.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default));
-                }
-            });
-        }
-
-        /// <summary>
-        /// 提交编辑任务。
-        /// </summary>
-        /// <param name="info"></param>
-        /// <param name="dataUrl"></param>
-        /// <returns></returns>
-        public SubmitResultVO SubmitEdit(TaskInfo info, DataUrl dataUrl)
-        {
-            var instance = _discordLoadBalancer.ChooseInstance(info.AccountFilter,
-                isNewTask: true,
-                botType: info.RealBotType ?? info.BotType,
-                preferredSpeedMode: info.Mode,
-                isYm: true);
-
-            if (instance == null || instance?.Account?.IsAcceptNewTask != true)
-            {
-                return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
-            }
-            if (!instance.Account.IsValidateModeContinueDrawing(info.Mode, info.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!instance.IsIdleQueue(mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
-            }
-            if (!instance.Account.IsYouChuan && !instance.Account.IsOfficial)
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "当前账号不支持编辑/重绘任务");
-            }
-
-            info.IsOfficial = instance.Account.IsOfficial;
-            info.IsPartner = instance.Account.IsYouChuan;
-            info.Mode = mode;
-            info.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, instance.ChannelId);
-            info.InstanceId = instance.ChannelId;
-
-            return instance.SubmitTaskAsync(info, async () =>
-            {
-                var setting = GlobalConfiguration.Setting;
-
-                if (instance.Account.IsYouChuan)
-                {
-                    var link = "";
-
-                    // 悠船
-                    if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                    {
-                        link = dataUrl.Url;
-
-                        if (setting.EnableYouChuanPromptLink && !link.Contains("youchuan"))
-                        {
-                            // 悠船官网链接转换
-                            var ff = new FileFetchHelper();
-                            var res = await ff.FetchFileAsync(link);
-                            if (res.Success && !string.IsNullOrWhiteSpace(res.Url))
-                            {
-                                link = res.Url;
-                            }
-                            else if (res.Success && res.FileBytes.Length > 0)
-                            {
-                                var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                                link = await instance.YmTaskService.UploadFileAsync(info, res.FileBytes, taskFileName);
-                            }
-                        }
+                        imageUrls.Add(uploadResult.Description);
                     }
                     else
                     {
-                        var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                        link = await instance.YmTaskService.UploadFileAsync(info, dataUrl.Data, taskFileName);
-                    }
-
-                    info.BaseImageUrl = link;
-                }
-                else
-                {
-                    if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                    {
-                        info.BaseImageUrl = dataUrl.Url;
-                    }
-                    else
-                    {
-                        var taskFileName = $"{info.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                        var uploadResult = await instance.UploadAsync(taskFileName, dataUrl);
-                        if (uploadResult.Code != ReturnCode.SUCCESS)
-                        {
-                            return Message.Of(uploadResult.Code, uploadResult.Description);
-                        }
-
                         var finalFileName = uploadResult.Description;
                         var sendImageResult = await instance.SendImageMessageAsync("upload image: " + finalFileName, finalFileName);
                         if (sendImageResult.Code != ReturnCode.SUCCESS)
                         {
                             return Message.Of(sendImageResult.Code, sendImageResult.Description);
                         }
-
-                        info.BaseImageUrl = sendImageResult.Description;
+                        imageUrls.Add(sendImageResult.Description);
                     }
                 }
-
-                info.Description = "/edit " + info.Prompt;
-                _taskStoreService.Save(info);
-
-                if (string.IsNullOrWhiteSpace(info.BaseImageUrl))
+                if (imageUrls.Any())
                 {
-                    return Message.Failure("BaseImageUrl is empty, please check the uploaded image.");
+                    info.Prompt = string.Join(" ", imageUrls) + " " + info.Prompt;
+                    info.PromptEn = string.Join(" ", imageUrls) + " " + info.PromptEn;
+                    info.Description = "/imagine " + info.Prompt;
+                    _taskStoreService.Save(info);
                 }
-
-                return await instance.YmTaskService.SubmitTaskAsync(info, _taskStoreService, instance);
-            });
-        }
-
-        /// <summary>
-        /// 提交转绘任务。
-        /// </summary>
-        /// <param name="info"></param>
-        /// <param name="dataUrl"></param>
-        /// <returns></returns>
-        public SubmitResultVO SubmitRetexture(TaskInfo info, DataUrl dataUrl)
-        {
-            var instance = _discordLoadBalancer.ChooseInstance(info.AccountFilter,
-                isNewTask: true,
-                botType: info.RealBotType ?? info.BotType,
-                preferredSpeedMode: info.Mode,
-                isYm: true);
-
-            if (instance == null || instance?.Account?.IsAcceptNewTask != true)
-            {
-                return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
-            }
-    
-            if (!instance.Account.IsValidateModeContinueDrawing(info.Mode, info.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!instance.IsIdleQueue(mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
-            }
-            if (!instance.Account.IsYouChuan && !instance.Account.IsOfficial)
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "当前账号不支持编辑/重绘任务");
-            }
-
-            info.IsOfficial = instance.Account.IsOfficial;
-            info.IsPartner = instance.Account.IsYouChuan;
-            info.Mode = mode;
-            info.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, instance.ChannelId);
-            info.InstanceId = instance.ChannelId;
-
-            return instance.SubmitTaskAsync(info, async () =>
-            {
-                var setting = GlobalConfiguration.Setting;
-
-                if (instance.Account.IsYouChuan)
-                {
-                    var link = "";
-
-                    // 悠船
-                    if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                    {
-                        link = dataUrl.Url;
-
-                        if (setting.EnableYouChuanPromptLink && !link.Contains("youchuan"))
-                        {
-                            // 悠船官网链接转换
-                            var ff = new FileFetchHelper();
-                            var res = await ff.FetchFileAsync(link);
-                            if (res.Success && !string.IsNullOrWhiteSpace(res.Url))
-                            {
-                                link = res.Url;
-                            }
-                            else if (res.Success && res.FileBytes.Length > 0)
-                            {
-                                var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                                link = await instance.YmTaskService.UploadFileAsync(info, res.FileBytes, taskFileName);
-                            }
-                        }
-                    }
-                    else
-                    {
-                        var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                        link = await instance.YmTaskService.UploadFileAsync(info, dataUrl.Data, taskFileName);
-                    }
-
-                    info.BaseImageUrl = link;
-                }
-                else
-                {
-                    if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                    {
-                        info.BaseImageUrl = dataUrl.Url;
-                    }
-                    else
-                    {
-                        var taskFileName = $"{info.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                        var uploadResult = await instance.UploadAsync(taskFileName, dataUrl);
-                        if (uploadResult.Code != ReturnCode.SUCCESS)
-                        {
-                            return Message.Of(uploadResult.Code, uploadResult.Description);
-                        }
-
-                        var finalFileName = uploadResult.Description;
-                        var sendImageResult = await instance.SendImageMessageAsync("upload image: " + finalFileName, finalFileName);
-                        if (sendImageResult.Code != ReturnCode.SUCCESS)
-                        {
-                            return Message.Of(sendImageResult.Code, sendImageResult.Description);
-                        }
-
-                        info.BaseImageUrl = sendImageResult.Description;
-                    }
-                }
-
-                info.Description = "/retexture " + info.Prompt;
-                info.PromptEn = info.PromptEn + " --dref " + info.BaseImageUrl;
-                _taskStoreService.Save(info);
-
-                if (string.IsNullOrWhiteSpace(info.BaseImageUrl))
-                {
-                    return Message.Failure("BaseImageUrl is empty, please check the uploaded image.");
-                }
-
-                return await instance.YmTaskService.SubmitTaskAsync(info, _taskStoreService, instance);
+                return await instance.ImagineAsync(info, info.PromptEn,
+                    info.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default));
             });
         }
 
@@ -575,16 +267,10 @@ namespace Midjourney.Infrastructure.Services
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
             }
-       
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!discordInstance.IsIdleQueue(mode))
+            if (!discordInstance.CanSubmitTask(task.IsPriority))
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
-            task.Mode = mode;
 
             return discordInstance.SubmitTaskAsync(task, async () =>
                 await discordInstance.UpscaleAsync(targetMessageId, index, targetMessageHash, messageFlags,
@@ -599,16 +285,10 @@ namespace Midjourney.Infrastructure.Services
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
             }
-     
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!discordInstance.IsIdleQueue(mode))
+            if (!discordInstance.IsIdleQueue)
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
-            task.Mode = mode;
 
             return discordInstance.SubmitTaskAsync(task, async () =>
                 await discordInstance.VariationAsync(targetMessageId, index, targetMessageHash, messageFlags,
@@ -631,16 +311,10 @@ namespace Midjourney.Infrastructure.Services
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
             }
-        
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!discordInstance.IsIdleQueue(mode))
+            if (!discordInstance.IsIdleQueue)
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
-            task.Mode = mode;
 
             return discordInstance.SubmitTaskAsync(task, async () =>
                 await discordInstance.RerollAsync(targetMessageId, targetMessageHash, messageFlags,
@@ -658,107 +332,23 @@ namespace Midjourney.Infrastructure.Services
             var discordInstance = _discordLoadBalancer.ChooseInstance(task.AccountFilter,
                 isNewTask: true,
                 botType: task.RealBotType ?? task.BotType,
-                describe: true,
-                preferredSpeedMode: task.Mode);
+                describe: true);
 
-            if (discordInstance == null || discordInstance?.Account?.IsDailyLimitContinueDrawing != true)
+            if (discordInstance == null || discordInstance?.Account?.IsContinueDrawing != true)
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
             }
-     
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!discordInstance.IsIdleQueue(mode))
+            if (!discordInstance.IsIdleQueue)
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
 
-            task.Mode = mode;
-
             task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.ChannelId);
             task.InstanceId = discordInstance.ChannelId;
-            task.IsPartner = discordInstance.Account.IsYouChuan;
-            task.IsOfficial = discordInstance.Account.IsOfficial;
 
             return discordInstance.SubmitTaskAsync(task, async () =>
             {
                 var link = "";
-
-                if (task.IsPartner || task.IsOfficial)
-                {
-                    if (task.IsPartner)
-                    {
-                        // 悠船
-                        if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                        {
-                            link = dataUrl.Url;
-                        }
-                        else
-                        {
-                            var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                            link = await discordInstance.YmTaskService.UploadFileAsync(task, dataUrl.Data, taskFileName);
-                        }
-                    }
-                    else
-                    {
-                        // 官方
-                        if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                        {
-                            link = dataUrl.Url;
-                        }
-                        else
-                        {
-                            var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                            var uploadResult = await discordInstance.UploadAsync(taskFileName, dataUrl);
-                            if (uploadResult.Code != ReturnCode.SUCCESS)
-                            {
-                                return Message.Of(uploadResult.Code, uploadResult.Description);
-                            }
-
-                            if (uploadResult.Description.StartsWith("http"))
-                            {
-                                link = uploadResult.Description;
-                            }
-                            else
-                            {
-                                return Message.Of(ReturnCode.FAILURE, "上传失败，未返回有效链接");
-                            }
-                        }
-                    }
-
-                    task.ImageUrl = link;
-                    task.Status = TaskStatus.IN_PROGRESS;
-
-                    _taskStoreService.Save(task);
-
-                    await discordInstance.YmTaskService.DescribeAsync(task);
-
-                    if (task.Buttons.Count > 0)
-                    {
-                        task.Success();
-                    }
-                    else
-                    {
-                        task.Fail("操作失败");
-                    }
-
-                    _taskStoreService.Save(task);
-
-                    return Message.Success();
-                }
-
-                //var taskFileName = $"{task.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                //var uploadResult = await discordInstance.UploadAsync(taskFileName, dataUrl);
-                //if (uploadResult.Code != ReturnCode.SUCCESS)
-                //{
-                //    return Message.Of(uploadResult.Code, uploadResult.Description);
-                //}
-                //var finalFileName = uploadResult.Description;
-                //return await discordInstance.DescribeAsync(finalFileName, task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default),
-                //  task.RealBotType ?? task.BotType);
-
                 if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
                 {
                     // 是否转换链接
@@ -800,6 +390,16 @@ namespace Midjourney.Infrastructure.Services
                     }
                 }
 
+                //var taskFileName = $"{task.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
+                //var uploadResult = await discordInstance.UploadAsync(taskFileName, dataUrl);
+                //if (uploadResult.Code != ReturnCode.SUCCESS)
+                //{
+                //    return Message.Of(uploadResult.Code, uploadResult.Description);
+                //}
+                //var finalFileName = uploadResult.Description;
+                //return await discordInstance.DescribeAsync(finalFileName, task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default),
+                //  task.RealBotType ?? task.BotType);
+
                 return await discordInstance.DescribeByLinkAsync(link, task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default),
                    task.RealBotType ?? task.BotType);
             });
@@ -815,19 +415,12 @@ namespace Midjourney.Infrastructure.Services
             var discordInstance = _discordLoadBalancer.ChooseInstance(task.AccountFilter,
                 isNewTask: true,
                 botType: task.RealBotType ?? task.BotType,
-                shorten: true,
-                preferredSpeedMode: task.Mode);
+                shorten: true);
 
-            if (discordInstance == null || discordInstance?.Account?.IsDailyLimitContinueDrawing != true)
+            if (discordInstance == null || discordInstance?.Account?.IsContinueDrawing != true)
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
             }
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-
-            task.Mode = mode;
             task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.ChannelId);
             task.InstanceId = discordInstance.ChannelId;
 
@@ -849,143 +442,31 @@ namespace Midjourney.Infrastructure.Services
             var discordInstance = _discordLoadBalancer.ChooseInstance(task.AccountFilter,
                 isNewTask: true,
                 botType: task.RealBotType ?? task.BotType,
-                blend: true,
-                preferredSpeedMode: task.Mode);
+                blend: true);
 
-            if (discordInstance == null || discordInstance?.Account?.IsDailyLimitContinueDrawing != true)
+            if (discordInstance == null || discordInstance?.Account?.IsContinueDrawing != true)
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
             }
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-
-            task.Mode = mode;
-            task.IsPartner = discordInstance.Account.IsYouChuan;
-            task.IsOfficial = discordInstance.Account.IsOfficial;
             task.InstanceId = discordInstance.ChannelId;
             task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.ChannelId);
-
             return discordInstance.SubmitTaskAsync(task, async () =>
             {
-                var isYm = task.IsPartner || task.IsOfficial;
-                // youchaun | mj
-                if (isYm)
+                var finalFileNames = new List<string>();
+                foreach (var dataUrl in dataUrls)
                 {
-                    var finalFileNames = new List<string>();
+                    var taskFileName = $"{task.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
 
-                    if (task.IsPartner)
+                    var uploadResult = await discordInstance.UploadAsync(taskFileName, dataUrl, useDiscordUpload: true);
+                    if (uploadResult.Code != ReturnCode.SUCCESS)
                     {
-                        var link = "";
-                        foreach (var dataUrl in dataUrls)
-                        {
-                            // 悠船
-                            if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                            {
-                                link = dataUrl.Url;
-                            }
-                            else
-                            {
-                                var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                                link = await discordInstance.YmTaskService.UploadFileAsync(task, dataUrl.Data, taskFileName);
-                            }
-
-                            if (string.IsNullOrWhiteSpace(link))
-                            {
-                                return Message.Of(ReturnCode.FAILURE, "上传失败，未返回有效链接");
-                            }
-
-                            finalFileNames.Add(link);
-                        }
-                    }
-                    else
-                    {
-                        var link = "";
-                        foreach (var dataUrl in dataUrls)
-                        {
-                            // 官方
-                            if (dataUrl.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
-                            {
-                                link = dataUrl.Url;
-                            }
-                            else
-                            {
-                                var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-                                var uploadResult = await discordInstance.UploadAsync(taskFileName, dataUrl);
-                                if (uploadResult.Code != ReturnCode.SUCCESS)
-                                {
-                                    return Message.Of(uploadResult.Code, uploadResult.Description);
-                                }
-
-                                if (uploadResult.Description.StartsWith("http"))
-                                {
-                                    link = uploadResult.Description;
-                                }
-                            }
-
-                            if (string.IsNullOrWhiteSpace(link))
-                            {
-                                return Message.Of(ReturnCode.FAILURE, "上传失败，未返回有效链接");
-                            }
-
-                            finalFileNames.Add(link);
-                        }
+                        return Message.Of(uploadResult.Code, uploadResult.Description);
                     }
 
-                    task.Action = TaskAction.BLEND;
-                    task.PromptEn = string.Join(" ", finalFileNames) + " " + task.PromptEn;
-
-                    if (!task.PromptEn.Contains("--ar"))
-                    {
-                        switch (dimensions)
-                        {
-                            case BlendDimensions.PORTRAIT:
-                                task.PromptEn += " --ar 2:3";
-                                break;
-
-                            case BlendDimensions.SQUARE:
-                                task.PromptEn += " --ar 1:1";
-                                break;
-
-                            case BlendDimensions.LANDSCAPE:
-                                task.PromptEn += " --ar 3:2";
-                                break;
-
-                            default:
-                                break;
-                        }
-                    }
-
-                    _taskStoreService.Save(task);
-
-                    return await discordInstance.YmTaskService.SubmitTaskAsync(task, _taskStoreService, discordInstance);
+                    finalFileNames.Add(uploadResult.Description);
                 }
-                else
-                {
-                    var finalFileNames = new List<string>();
-                    foreach (var dataUrl in dataUrls)
-                    {
-                        var guid = "";
-                        if (dataUrls.Count > 0)
-                        {
-                            guid = "-" + Guid.NewGuid().ToString("N");
-                        }
-
-                        var taskFileName = $"{task.Id}{guid}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
-
-                        var uploadResult = await discordInstance.UploadAsync(taskFileName, dataUrl, useDiscordUpload: !isYm);
-                        if (uploadResult.Code != ReturnCode.SUCCESS)
-                        {
-                            return Message.Of(uploadResult.Code, uploadResult.Description);
-                        }
-
-                        finalFileNames.Add(uploadResult.Description);
-                    }
-
-                    return await discordInstance.BlendAsync(finalFileNames, dimensions,
-                        task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default), task.RealBotType ?? task.BotType);
-                }
+                return await discordInstance.BlendAsync(finalFileNames, dimensions,
+                    task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default), task.RealBotType ?? task.BotType);
             });
         }
 
@@ -1024,53 +505,38 @@ namespace Midjourney.Infrastructure.Services
                     }
                 }
             }
-            if (discordInstance == null || discordInstance?.Account?.IsDailyLimitContinueDrawing != true)
+
+            if (discordInstance == null || discordInstance?.Account?.IsContinueDrawing != true)
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
             }
-    
+            
+            // 验证实例是否符合速度模式过滤条件
+            if (task.AccountFilter?.Modes?.Count > 0)
+            {
+                // 检查实例允许的模式是否与过滤模式有交集
+                if (discordInstance.Account.AllowModes?.Count > 0)
+                {
+                    if (!discordInstance.Account.AllowModes.Any(allowedMode => task.AccountFilter.Modes.Contains(allowedMode)))
+                    {
+                        return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
+                    }
+                }
 
-            task.IsPartner = discordInstance.Account.IsYouChuan;
-            task.IsOfficial = discordInstance.Account.IsOfficial;
+            }
+            
+            if (!discordInstance.CanSubmitTask(task.IsPriority))
+            {
+                return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
+            }
+
             task.InstanceId = discordInstance.ChannelId;
-
-            if (task.Action == TaskAction.UPSCALE && (task.IsPartner || task.IsOfficial))
-            {
-                // 悠船/官方放大不验证额度
-            }
-            else
-            {
-                if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-                {
-                    return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-                }
-
-                if (!discordInstance.IsIdleQueue(mode))
-                {
-                    return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
-                }
-
-                task.Mode = mode;
-            }
+            task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.ChannelId);
 
             var targetTask = _taskStoreService.Get(submitAction.TaskId)!;
-            if (targetTask == null)
-            {
-                return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "目标任务不存在");
-            }
-
             var messageFlags = targetTask.GetProperty<string>(Constants.TASK_PROPERTY_FLAGS, default)?.ToInt() ?? 0;
             var messageId = targetTask.GetProperty<string>(Constants.TASK_PROPERTY_MESSAGE_ID, default);
 
-            if (task.Mode == null)
-            {
-                // 如果没有设置模式，则使用目标任务的模式
-                task.Mode = targetTask.Mode;
-            }
-
-            task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.ChannelId);
-            task.IsOfficial = targetTask.IsOfficial;
-            task.IsPartner = targetTask.IsPartner;
             task.BotType = targetTask.BotType;
             task.RealBotType = targetTask.RealBotType;
 
@@ -1123,55 +589,6 @@ namespace Midjourney.Infrastructure.Services
 
                 task.SetProperty(Constants.TASK_PROPERTY_MESSAGE_ID, targetTask.MessageId);
                 task.SetProperty(Constants.TASK_PROPERTY_FLAGS, messageFlags);
-
-                _taskStoreService.Save(task);
-
-                // 状态码为 21
-                // 重绘、自定义变焦始终 remix 为true
-                return SubmitResultVO.Of(ReturnCode.EXISTED, "Waiting for window confirm", task.Id)
-                    .SetProperty(Constants.TASK_PROPERTY_FINAL_PROMPT, task.PromptEn)
-                    .SetProperty(Constants.TASK_PROPERTY_REMIX, true);
-            }
-            // 手动视频
-            else if (submitAction.CustomId.StartsWith("MJ::JOB::video::")
-                && submitAction.CustomId.Contains("::manual"))
-            {
-                var cmd = targetTask.IsPartner ? targetTask.PartnerTaskInfo?.FullCommand
-                    : targetTask.IsOfficial ? targetTask.OfficialTaskInfo?.FullCommand
-                    : targetTask.PromptFull;
-
-                if (submitAction.CustomId.Contains("::low::"))
-                {
-                    if (!cmd.Contains("--motion"))
-                    {
-                        cmd += " --motion low";
-                    }
-                }
-                else
-                {
-                    if (!cmd.Contains("--motion"))
-                    {
-                        cmd += " --motion high";
-                    }
-                }
-
-                if (!cmd.Contains("--video"))
-                {
-                    cmd += " --video 1";
-                }
-
-                task.Prompt = cmd;
-                task.PromptEn = cmd;
-                task.Status = TaskStatus.MODAL;
-
-                if (submitAction.CustomId.Contains("entend"))
-                {
-                    task.Action = TaskAction.VIDEO_EXTEND;
-                }
-                else
-                {
-                    task.Action = TaskAction.VIDEO;
-                }
 
                 _taskStoreService.Save(task);
 
@@ -1314,7 +731,7 @@ namespace Midjourney.Infrastructure.Services
                 }
             }
             // REMIX 处理
-            else if (task.Action == TaskAction.PAN || task.Action == TaskAction.VARIATION || task.Action == TaskAction.REROLL)
+            else if (task.Action == TaskAction.PAN || task.Action == TaskAction.VARIATION || task.Action == TaskAction.REROLL || task.Action == TaskAction.VIDEO || task.Action == TaskAction.VIDEO_EXTEND)
             {
                 task.SetProperty(Constants.TASK_PROPERTY_MESSAGE_ID, targetTask.MessageId);
                 task.SetProperty(Constants.TASK_PROPERTY_FLAGS, messageFlags);
@@ -1358,26 +775,13 @@ namespace Midjourney.Infrastructure.Services
                 }
             }
 
-            if (task.IsPartner || task.IsOfficial)
-            {
-                _taskStoreService.Save(task);
-            }
-
             return discordInstance.SubmitTaskAsync(task, async () =>
             {
-                // 悠船 | 官方
-                if (task.IsPartner || task.IsOfficial)
-                {
-                    return await discordInstance.YmTaskService.SubmitActionAsync(task, submitAction, targetTask, _taskStoreService, discordInstance);
-                }
-                else
-                {
-                    return await discordInstance.ActionAsync(
-                        messageId ?? targetTask.MessageId,
-                        submitAction.CustomId,
-                        messageFlags,
-                        task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default), task);
-                }
+                return await discordInstance.ActionAsync(
+                    messageId ?? targetTask.MessageId,
+                    submitAction.CustomId,
+                    messageFlags,
+                    task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default), task);
             });
         }
 
@@ -1418,34 +822,20 @@ namespace Midjourney.Infrastructure.Services
                 }
             }
 
-            if (discordInstance == null || discordInstance?.Account?.IsDailyLimitContinueDrawing != true)
+            if (discordInstance == null || discordInstance?.Account?.IsContinueDrawing != true)
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
             }
-         
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!discordInstance.IsIdleQueue(mode))
+            if (!discordInstance.IsIdleQueue)
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
 
-            task.Mode = mode;
             task.InstanceId = discordInstance.ChannelId;
             task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, discordInstance.ChannelId);
 
             return discordInstance.SubmitTaskAsync(task, async () =>
             {
-                if (task.IsPartner || task.IsOfficial)
-                {
-                    var parentTask = _taskStoreService.Get(task.ParentId);
-                    var ymMsg = await discordInstance.YmTaskService.SubmitModalAsync(task, parentTask, submitAction, _taskStoreService);
-                    _taskStoreService.Save(task);
-                    return ymMsg;
-                }
-
                 var customId = task.GetProperty<string>(Constants.TASK_PROPERTY_CUSTOM_ID, default);
                 var messageFlags = task.GetProperty<string>(Constants.TASK_PROPERTY_FLAGS, default)?.ToInt() ?? 0;
                 var messageId = task.GetProperty<string>(Constants.TASK_PROPERTY_MESSAGE_ID, default);
@@ -1498,6 +888,11 @@ namespace Midjourney.Infrastructure.Services
                 {
                     var ifarmeCustomId = task.GetProperty<string>(Constants.TASK_PROPERTY_IFRAME_MODAL_CREATE_CUSTOM_ID, default);
                     return await discordInstance.InpaintAsync(task, ifarmeCustomId, task.PromptEn, submitAction.MaskBase64);
+                }
+                // 视频
+                else if (customId.StartsWith("MJ::JOB::animate"))
+                {
+                    return await discordInstance.AnimateAsync(task, task.RemixModalMessageId, customId, task.PromptEn, nonce);
                 }
                 // 图生文 -> 文生图
                 else if (customId.StartsWith("MJ::Job::PicReader::"))
@@ -1644,6 +1039,28 @@ namespace Midjourney.Infrastructure.Services
                         // 在进行 U 时，记录目标图片的 U 的 customId
                         task.SetProperty(Constants.TASK_PROPERTY_REMIX_U_CUSTOM_ID, parentTask?.GetProperty<string>(Constants.TASK_PROPERTY_REMIX_U_CUSTOM_ID, default));
                     }
+                    else if (action == TaskAction.VIDEO || action == TaskAction.VIDEO_EXTEND)
+                    {
+                        modal = "MJ::AnimateModal::prompt";
+                        var parts = customId.Split("::");
+                        
+                        // 检查是否已经是转换后的格式
+                        if (customId.StartsWith("MJ::AnimateModal::"))
+                        {
+                            // 已经是正确格式，无需转换
+                            customId = customId;
+                        }
+                        else
+                        {
+                            // 原始格式转换：MJ::JOB::animate_high::1::hash::SOLO -> MJ::AnimateModal::hash::1::high:0
+                            var animateType = parts[2].Contains('_') ? parts[2].Split('_')[1] : parts[2];
+                            var convertedString = $"MJ::AnimateModal::{parts[4]}::{parts[3]}::{animateType}:0";
+                            customId = convertedString;
+                        }
+
+                        task.SetProperty(Constants.TASK_PROPERTY_REMIX_CUSTOM_ID, customId);
+                        task.SetProperty(Constants.TASK_PROPERTY_REMIX_MODAL, modal);
+                    }
                     else
                     {
                         return Message.Failure("未知操作");
@@ -1672,38 +1089,14 @@ namespace Midjourney.Infrastructure.Services
             {
                 return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "无可用的账号实例");
             }
-            
-            if (!discordInstance.Account.IsValidateModeContinueDrawing(task.Mode, task.AccountFilter?.Modes, out var mode))
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "无可用的账号实例");
-            }
-            if (!discordInstance.IsIdleQueue(mode))
+            if (!discordInstance.IsIdleQueue)
             {
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
 
-            task.Mode = mode;
-
-            // 如果是悠船或官方
-            if (task.IsPartner || task.IsOfficial)
-            {
-                var seek = await discordInstance.YmTaskService.GetSeedAsync(task);
-                if (!string.IsNullOrWhiteSpace(seek))
-                {
-                    task.Seed = seek;
-
-                    _taskStoreService.Save(task);
-
-                    return SubmitResultVO.Of(ReturnCode.SUCCESS, "成功", seek);
-                }
-                else
-                {
-                    return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "未找到 seed");
-                }
-            }
-
             // 请配置私聊频道
             var privateChannelId = string.Empty;
+
             if ((task.RealBotType ?? task.BotType) == EBotType.MID_JOURNEY)
             {
                 privateChannelId = discordInstance.Account.PrivateChannelId;
@@ -1995,6 +1388,7 @@ namespace Midjourney.Infrastructure.Services
                                         AfterIntervalMin = 1.2m, // 默认值 1.2
                                         AfterIntervalMax = 1.2m, // 默认值 1.2
                                         QueueSize = accountJson.queueSize ?? 10, // 默认值 10
+                                        MaxQueueSize = 100, // 默认值 100
                                         TimeoutMinutes = accountJson.timeoutMinutes ?? 5, // 默认值 5
                                         Remark = accountJson.remark,
 

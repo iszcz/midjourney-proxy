@@ -22,9 +22,12 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited. 
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using System.Net;
 using Microsoft.AspNetCore.Mvc;
+using Midjourney.Infrastructure.Data;
+using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.LoadBalancer;
+using Midjourney.Infrastructure.Services;
+using System.Net;
 
 namespace Midjourney.API.Controllers
 {
@@ -40,12 +43,9 @@ namespace Midjourney.API.Controllers
     {
         private readonly ITaskStoreService _taskStoreService;
         private readonly ITaskService _taskService;
+
         private readonly DiscordLoadBalancer _discordLoadBalancer;
         private readonly WorkContext _workContext;
-
-        // 是否匿名用户
-        private readonly bool _isAnonymous;
-
 
         public TaskController(
             ITaskStoreService taskStoreService,
@@ -62,10 +62,9 @@ namespace Midjourney.API.Controllers
 
             var user = _workContext.GetUser();
 
-            _isAnonymous = user?.Role != EUserRole.ADMIN;
-
             // 如果非演示模式、未开启访客，如果没有登录，直接返回 403 错误
-            if (GlobalConfiguration.IsDemoMode != true && GlobalConfiguration.Setting.EnableGuest != true)
+            if (GlobalConfiguration.IsDemoMode != true
+                && GlobalConfiguration.Setting.EnableGuest != true)
             {
                 if (user == null)
                 {
@@ -97,41 +96,17 @@ namespace Midjourney.API.Controllers
         [HttpPost("{id}/cancel")]
         public ActionResult<TaskInfo> Cancel(string id)
         {
-            if (_isAnonymous)
+            if (GlobalConfiguration.IsDemoMode == true)
             {
+                // 直接抛出错误
                 return BadRequest("演示模式，禁止操作");
             }
-
-            var user = _workContext.GetUser();
 
             var queueTask = _discordLoadBalancer.GetQueueTasks().FirstOrDefault(t => t.Id == id);
             if (queueTask != null)
             {
-                if (user.Id == queueTask.UserId || user.Role == EUserRole.ADMIN)
-                {
-                    queueTask.Fail("主动取消任务");
-                }
+                queueTask.Fail("主动取消任务");
             }
-            else
-            {
-                var targetTask = _discordLoadBalancer.GetRunningTasks().FirstOrDefault(t => t.Id == id);
-
-                // 如果任务不在队列中，则从存储中获取
-                if (targetTask == null)
-                {
-                    targetTask = _taskStoreService.Get(id);
-                }
-
-                if (targetTask != null)
-                {
-                    if (user.Id == targetTask.UserId || user.Role == EUserRole.ADMIN)
-                    {
-                        targetTask.Fail("取消任务");
-                        _taskStoreService.Save(targetTask);
-                    }
-                }
-            }
-
 
             return Ok();
         }
@@ -206,10 +181,8 @@ namespace Midjourney.API.Controllers
                 return Ok(new List<TaskInfo>());
             }
 
-            var ids = conditionDTO.Ids.Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim()).Distinct().ToList();
-
             var result = new List<TaskInfo>();
-            var notInQueueIds = new HashSet<string>(ids);
+            var notInQueueIds = new HashSet<string>(conditionDTO.Ids);
 
             foreach (var task in _discordLoadBalancer.GetQueueTasks())
             {
