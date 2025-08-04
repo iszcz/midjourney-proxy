@@ -577,10 +577,10 @@ namespace Midjourney.API.Controllers
         [HttpPost("video")]
         public ActionResult<SubmitResultVO> Video([FromBody] SubmitVideoDTO videoDTO)
         {
-            if (string.IsNullOrWhiteSpace(videoDTO.Prompt))
-            {
-                return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "prompt不能为空"));
-            }
+            // if (string.IsNullOrWhiteSpace(videoDTO.Prompt))
+            // {
+            //     return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "prompt不能为空"));
+            // }
 
             // 处理视频扩展操作
             if (!string.IsNullOrWhiteSpace(videoDTO.Action) && videoDTO.Action.ToLowerInvariant() == "extend")
@@ -611,15 +611,17 @@ namespace Midjourney.API.Controllers
                     task));
             }
 
-            // 处理普通视频操作 - 转换为 Imagine 请求
-            if (string.IsNullOrWhiteSpace(videoDTO.Image))
-            {
-                return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "普通video操作需要提供image"));
-            }
-
             // 构建video的imagine命令
             var prompt = videoDTO.Prompt.Trim();
-            var imaginePrompt = $"{videoDTO.Image} {prompt} --video 1";
+            var imaginePrompt = $"{prompt}";
+
+            // 处理普通视频操作 - 转换为 Imagine 请求
+            if (!string.IsNullOrWhiteSpace(videoDTO.Image))
+            {
+                imaginePrompt = $"{videoDTO.Image} {prompt}";
+            }
+
+            var imaginePrompt += $" --video 1";
             
             if (!string.IsNullOrWhiteSpace(videoDTO.EndImage))
             {
