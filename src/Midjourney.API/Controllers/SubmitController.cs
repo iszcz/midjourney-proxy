@@ -621,7 +621,7 @@ namespace Midjourney.API.Controllers
                 imaginePrompt = $"{videoDTO.Image} {prompt}";
             }
 
-            var imaginePrompt += $" --video 1";
+            imaginePrompt += $" --video 1";
             
             if (!string.IsNullOrWhiteSpace(videoDTO.EndImage))
             {
