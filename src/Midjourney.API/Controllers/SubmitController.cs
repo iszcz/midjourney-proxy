@@ -575,12 +575,13 @@ namespace Midjourney.API.Controllers
         /// <param name="videoDTO">提交Video任务的DTO</param>
         /// <returns>提交结果</returns>
         [HttpPost("video")]
-        public ActionResult<SubmitResultVO> Video([FromBody] SubmitVideoDTO videoDTO)
+        public async Task<ActionResult<SubmitResultVO>> Video([FromBody] SubmitVideoDTO videoDTO)
         {
-            // if (string.IsNullOrWhiteSpace(videoDTO.Prompt))
-            // {
-            //     return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "prompt不能为空"));
-            // }
+            // 验证prompt和image不能都为空
+            if (string.IsNullOrWhiteSpace(videoDTO.Prompt) && string.IsNullOrWhiteSpace(videoDTO.Image))
+            {
+                return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "prompt和image不能都为空"));
+            }
 
             // 处理视频扩展操作
             if (!string.IsNullOrWhiteSpace(videoDTO.Action) && videoDTO.Action.ToLowerInvariant() == "extend")
@@ -598,7 +599,7 @@ namespace Midjourney.API.Controllers
 
                 var task = NewTask(videoDTO);
                 task.BotType = GetBotType(videoDTO.BotType);
-                task.Prompt = videoDTO.Prompt.Trim();
+                task.Prompt = videoDTO.Prompt?.Trim() ?? "";
 
                 NewTaskDoFilter(task, videoDTO.AccountFilter);
 
@@ -606,42 +607,115 @@ namespace Midjourney.API.Controllers
                 return Ok(_taskService.SubmitVideoExtend(
                     videoDTO.TaskId, 
                     videoDTO.Index.Value, 
-                    videoDTO.Prompt.Trim(), 
+                    videoDTO.Prompt?.Trim() ?? "", 
                     videoDTO.Motion ?? "low", 
                     task));
             }
 
-            // 构建video的imagine命令
-            var prompt = videoDTO.Prompt.Trim();
-            var imaginePrompt = $"{prompt}";
-
-            // 处理普通视频操作 - 转换为 Imagine 请求
+            // 处理image参数，转换为URL
+            string imageUrl = "";
             if (!string.IsNullOrWhiteSpace(videoDTO.Image))
             {
-                imaginePrompt = $"{videoDTO.Image} {prompt}";
+                // 判断是URL还是base64
+                if (videoDTO.Image.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 已经是URL，直接使用
+                    imageUrl = videoDTO.Image;
+                }
+                else if (videoDTO.Image.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    // 是base64格式，需要上传转换为URL
+                    var setting = GlobalConfiguration.Setting;
+                    if (!setting.EnableUserCustomUploadBase64)
+                    {
+                        return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "禁止上传"));
+                    }
+
+                    try
+                    {
+                        var dataUrl = DataUrl.Parse(videoDTO.Image);
+                        var instance = _discordLoadBalancer.ChooseInstance(videoDTO.AccountFilter);
+                        if (instance == null)
+                        {
+                            return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "实例不存在或不可用"));
+                        }
+
+                        var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType)}";
+                        var uploadResult = await instance.UploadAsync(taskFileName, dataUrl);
+                        if (uploadResult.Code != ReturnCode.SUCCESS)
+                        {
+                            return Ok(Message.Of(uploadResult.Code, uploadResult.Description));
+                        }
+
+                        if (uploadResult.Description.StartsWith("http", StringComparison.OrdinalIgnoreCase))
+                        {
+                            imageUrl = uploadResult.Description;
+                        }
+                        else
+                        {
+                            var finalFileName = uploadResult.Description;
+                            var sendImageResult = await instance.SendImageMessageAsync("upload image: " + finalFileName, finalFileName);
+                            if (sendImageResult.Code != ReturnCode.SUCCESS)
+                            {
+                                return Ok(Message.Of(sendImageResult.Code, sendImageResult.Description));
+                            }
+                            imageUrl = sendImageResult.Description;
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        _logger.LogError(e, "base64格式转换异常");
+                        return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "base64格式错误"));
+                    }
+                }
+                else
+                {
+                    return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "image参数必须是有效的URL或base64格式"));
+                }
             }
 
-            imaginePrompt += $" --video 1";
+            // 构建最终的prompt
+            var finalPrompt = "";
+            var prompt = videoDTO.Prompt?.Trim() ?? "";
+
+            if (!string.IsNullOrWhiteSpace(imageUrl) && !string.IsNullOrWhiteSpace(prompt))
+            {
+                // 都存在：image插入到prompt最前面
+                finalPrompt = $"{imageUrl} {prompt}";
+            }
+            else if (!string.IsNullOrWhiteSpace(imageUrl))
+            {
+                // 只有image存在：image作为prompt
+                finalPrompt = imageUrl;
+            }
+            else if (!string.IsNullOrWhiteSpace(prompt))
+            {
+                // 只有prompt存在：直接用prompt
+                finalPrompt = prompt;
+            }
+
+            // 添加video参数
+            finalPrompt += " --video 1";
             
             if (!string.IsNullOrWhiteSpace(videoDTO.EndImage))
             {
-                imaginePrompt += $" --end {videoDTO.EndImage}";
+                finalPrompt += $" --end {videoDTO.EndImage}";
             }
             
             if (!string.IsNullOrWhiteSpace(videoDTO.Motion))
             {
-                imaginePrompt += $" --motion {videoDTO.Motion}";
+                finalPrompt += $" --motion {videoDTO.Motion}";
             }
 
             if (videoDTO.Loop == true)
             {
-                imaginePrompt += " --loop";
+                finalPrompt += " --loop";
             }
 
             // 构造 SubmitImagineDTO 并调用 Imagine 接口
             var imagineDTO = new SubmitImagineDTO
             {
-                Prompt = imaginePrompt,
+                Prompt = finalPrompt,
                 BotType = videoDTO.BotType,
                 AccountFilter = videoDTO.AccountFilter,
                 Base64Array = new List<string>() // 空的base64数组
