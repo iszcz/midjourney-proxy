@@ -114,7 +114,10 @@ namespace Midjourney.Infrastructure.Handle
             string imageUrl = GetImageUrl(message);
             string messageHash = discordHelper.GetMessageHash(imageUrl);
 
+            // 优先级1: 通过MessageId匹配
             var task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && c.MessageId == msgId).FirstOrDefault();
+            
+            // 优先级2: 通过InteractionMetadataId匹配
             if (task == null && !string.IsNullOrWhiteSpace(message.InteractionMetadata?.Id))
             {
                 task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && c.InteractionMetadataId == message.InteractionMetadata.Id).FirstOrDefault();
@@ -126,11 +129,9 @@ namespace Midjourney.Infrastructure.Handle
                 }
             }
 
-            // 如果依然找不到任务，可能是 NIJI 任务
-            // 不判断 && botType == EBotType.NIJI_JOURNEY
             var botType = GetBotType(message);
 
-            // 优先使用 full prompt 进行匹配
+            // 优先级3: 通过PromptFull匹配
             if (task == null)
             {
                 if (!string.IsNullOrWhiteSpace(fullPrompt))
@@ -140,6 +141,7 @@ namespace Midjourney.Infrastructure.Handle
                 }
             }
 
+            // 优先级4: 通过FormatPrompt匹配
             if (task == null)
             {
                 var prompt = finalPrompt.FormatPrompt();
@@ -154,18 +156,9 @@ namespace Midjourney.Infrastructure.Handle
                         && (c.PromptEn.FormatPrompt() == prompt || c.PromptEn.FormatPrompt().EndsWith(prompt) || prompt.StartsWith(c.PromptEn.FormatPrompt())))
                         .OrderBy(c => c.StartTime).FirstOrDefault();
                 }
-                else
-                {
-                    // 如果最终提示词为空，则可能是重绘、混图等任务
-                    task = instance
-                        .FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED)
-                        && (c.BotType == botType || c.RealBotType == botType) && c.Action == action)
-                        .OrderBy(c => c.StartTime).FirstOrDefault();
-                }
             }
 
-
-            // 如果依然找不到任务，保留 prompt link 进行匹配
+            // 优先级5: 通过FormatPromptParam匹配
             if (task == null)
             {
                 var prompt = finalPrompt.FormatPromptParam();
@@ -176,6 +169,62 @@ namespace Midjourney.Infrastructure.Handle
                             (c.BotType == botType || c.RealBotType == botType) && !string.IsNullOrWhiteSpace(c.PromptEn)
                             && (c.PromptEn.FormatPromptParam() == prompt || c.PromptEn.FormatPromptParam().EndsWith(prompt) || prompt.StartsWith(c.PromptEn.FormatPromptParam())))
                             .OrderBy(c => c.StartTime).FirstOrDefault();
+                }
+            }
+
+            // 优先级6: 改进的空prompt匹配逻辑
+            if (task == null)
+            {
+                // 对于特定的任务类型，当prompt为空时提供更精确的匹配
+                if (action == TaskAction.VIDEO || action == TaskAction.VIDEO_EXTEND ||
+                    action == TaskAction.BLEND || action == TaskAction.DESCRIBE ||
+                    action == TaskAction.ACTION)
+                {
+                    // 首先尝试通过imageUrl匹配，如果任务的prompt包含相同的URL
+                    if (!string.IsNullOrWhiteSpace(imageUrl))
+                    {
+                        task = instance.FindRunningTask(c => 
+                            (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
+                            (c.BotType == botType || c.RealBotType == botType) && 
+                            c.Action == action &&
+                            !string.IsNullOrWhiteSpace(c.PromptEn) && c.PromptEn.Contains(imageUrl))
+                            .OrderBy(c => c.StartTime).FirstOrDefault();
+                    }
+
+                    // 如果通过URL匹配失败，尝试通过messageHash匹配
+                    if (task == null && !string.IsNullOrWhiteSpace(messageHash))
+                    {
+                        task = instance.FindRunningTask(c => 
+                            (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
+                            (c.BotType == botType || c.RealBotType == botType) && 
+                            c.Action == action &&
+                            (c.JobId == messageHash || c.MessageId == messageHash))
+                            .OrderBy(c => c.StartTime).FirstOrDefault();
+                    }
+
+                    // 最后才使用原有的模糊匹配，但增加时间窗口限制
+                    if (task == null)
+                    {
+                        // 只匹配最近5分钟内的任务，避免匹配到太旧的任务
+                        var cutoffTime = DateTimeOffset.Now.AddMinutes(-5).ToUnixTimeMilliseconds();
+                        task = instance.FindRunningTask(c => 
+                            (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
+                            (c.BotType == botType || c.RealBotType == botType) && 
+                            c.Action == action &&
+                            c.StartTime >= cutoffTime)
+                            .OrderBy(c => c.StartTime).FirstOrDefault();
+                    }
+                }
+                else
+                {
+                    // 其他任务类型使用原有逻辑，但增加时间窗口限制
+                    var cutoffTime = DateTimeOffset.Now.AddMinutes(-5).ToUnixTimeMilliseconds();
+                    task = instance.FindRunningTask(c => 
+                        (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
+                        (c.BotType == botType || c.RealBotType == botType) && 
+                        c.Action == action &&
+                        c.StartTime >= cutoffTime)
+                        .OrderBy(c => c.StartTime).FirstOrDefault();
                 }
             }
 
