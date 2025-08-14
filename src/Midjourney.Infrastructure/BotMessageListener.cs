@@ -1035,9 +1035,41 @@ namespace Midjourney.Infrastructure
                                             {
                                                 Thread.Sleep(5 * 1000);
 
-                                                // 保存
+                                                var fullMessage = $"{title}, {desc}";
+                                                
+                                                // 检查是否为临时封禁（包含 "automatic temporary" 关键字）
+                                                if (title == "Blocked" && !string.IsNullOrEmpty(desc) && 
+                                                    desc.Contains("automatic temporary", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    // 解析时间戳
+                                                    var timestamp = desc.ParseDiscordTimestamp();
+                                                    if (timestamp.HasValue)
+                                                    {
+                                                        _logger.Information($"账号 {Account.GetDisplay()} 临时封禁，解封时间: {timestamp.Value}");
+                                                        
+                                                        // 设置临时封禁，不完全禁用账号
+                                                        Account.Enable = false; // 暂时禁用
+                                                        Account.DisabledReason = fullMessage;
+                                                        Account.TempBlockEndTime = timestamp.Value;
+                                                        
+                                                        DbHelper.Instance.AccountStore.Update(Account);
+                                                        
+                                                        _discordInstance?.ClearAccountCache(Account.Id);
+                                                        _discordInstance?.Dispose();
+                                                        
+                                                        // 发送临时封禁邮件通知
+                                                        var unblockTime = DateTimeOffset.FromUnixTimeSeconds(timestamp.Value).ToString("yyyy-MM-dd HH:mm:ss");
+                                                        EmailJob.Instance.EmailSend(_properties.Smtp, $"MJ账号临时封禁通知-{Account.ChannelId}",
+                                                            $"{Account.ChannelId} 临时封禁，预计解封时间: {unblockTime}，原因: {fullMessage}");
+                                                        
+                                                        return;
+                                                    }
+                                                }
+
+                                                // 保存（永久禁用）
                                                 Account.Enable = false;
-                                                Account.DisabledReason = $"{title}, {desc}";
+                                                Account.DisabledReason = fullMessage;
+                                                Account.TempBlockEndTime = null; // 清除临时封禁时间
 
                                                 DbHelper.Instance.AccountStore.Update(Account);
 

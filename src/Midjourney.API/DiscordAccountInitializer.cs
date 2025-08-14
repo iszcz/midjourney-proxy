@@ -377,6 +377,9 @@ namespace Midjourney.API
 
                         await Initialize(configAccounts.ToArray());
 
+                        // 检查临时封禁账号是否到期
+                        await CheckTempBlockedAccounts();
+
                         // 检查并删除旧的文档
                         CheckAndDeleteOldDocuments();
                     }
@@ -396,6 +399,56 @@ namespace Midjourney.API
             catch (Exception ex)
             {
                 _logger.Error(ex, "例行检查执行异常");
+            }
+        }
+
+        /// <summary>
+        /// 检查临时封禁账号是否到期，如果到期则自动启用账号
+        /// </summary>
+        private async Task CheckTempBlockedAccounts()
+        {
+            try
+            {
+                var currentTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                
+                // 查找所有临时封禁的账号（Enable=false 且 TempBlockEndTime 不为空）
+                var tempBlockedAccounts = DbHelper.Instance.AccountStore
+                    .Where(c => c.Enable == false && c.TempBlockEndTime.HasValue && 
+                               c.DisabledReason != null && c.DisabledReason.Contains("automatic temporary", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                foreach (var account in tempBlockedAccounts)
+                {
+                    if (account.TempBlockEndTime.Value <= currentTimestamp)
+                    {
+                        // 临时封禁已到期，启用账号
+                        _logger.Information($"账号 {account.GetDisplay()} 临时封禁已到期，自动启用账号");
+                        
+                        account.Enable = true;
+                        account.DisabledReason = null;
+                        account.TempBlockEndTime = null;
+                        account.Lock = false; // 解除锁定
+                        
+                        DbHelper.Instance.AccountStore.Update(account);
+                        
+                        // 清除缓存
+                        var discordInstance = _discordLoadBalancer.GetDiscordInstance(account.ChannelId);
+                        discordInstance?.ClearAccountCache(account.Id);
+                        
+                        // 发送解封邮件通知
+                        EmailJob.Instance.EmailSend(_properties.Smtp, $"MJ账号解封通知-{account.ChannelId}",
+                            $"{account.ChannelId} 临时封禁已到期，账号已自动启用");
+                    }
+                }
+
+                if (tempBlockedAccounts.Count > 0)
+                {
+                    _logger.Information($"检查了 {tempBlockedAccounts.Count} 个临时封禁账号");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "检查临时封禁账号异常");
             }
         }
 

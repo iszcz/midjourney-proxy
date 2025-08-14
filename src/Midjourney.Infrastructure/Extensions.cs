@@ -485,6 +485,30 @@ namespace Midjourney.Infrastructure
         }
 
         /// <summary>
+        /// 解析Discord时间戳格式 &lt;t:timestamp:R&gt; 并返回Unix时间戳（秒）
+        /// </summary>
+        /// <param name="text">包含Discord时间戳的文本</param>
+        /// <returns>Unix时间戳（秒），如果解析失败返回null</returns>
+        public static long? ParseDiscordTimestamp(this string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return null;
+            }
+
+            // 使用正则表达式匹配 <t:timestamp:R> 格式
+            var regex = new System.Text.RegularExpressions.Regex(@"<t:(\d+):R>");
+            var match = regex.Match(text);
+            
+            if (match.Success && long.TryParse(match.Groups[1].Value, out var timestamp))
+            {
+                return timestamp;
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// 判断是否处于摸鱼时间（如果没有值，则默认：false）
         /// </summary>
         /// <param name="dateTime"></param>

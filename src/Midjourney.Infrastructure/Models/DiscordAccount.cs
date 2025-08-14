@@ -155,6 +155,11 @@ namespace Midjourney.Infrastructure.Models
         public string CfUrl { get; set; }
 
         /// <summary>
+        /// 临时封禁解封时间戳（Unix时间戳，秒）
+        /// </summary>
+        public long? TempBlockEndTime { get; set; }
+
+        /// <summary>
         /// 是否赞助者
         /// </summary>
         public bool IsSponsor { get; set; }
