@@ -411,39 +411,68 @@ namespace Midjourney.API
             {
                 var currentTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 
-                // 查找所有临时封禁的账号（Enable=false 且 TempBlockEndTime 不为空）
-                var tempBlockedAccounts = DbHelper.Instance.AccountStore
-                    .Where(c => c.Enable == false && c.TempBlockEndTime.HasValue && 
-                               c.DisabledReason != null && c.DisabledReason.Contains("automatic temporary", StringComparison.OrdinalIgnoreCase))
+                // 查找所有可能的临时封禁账号（Enable=false 且 DisabledReason 包含 "automatic temporary"）
+                var potentialTempBlockedAccounts = DbHelper.Instance.AccountStore
+                    .Where(c => c.Enable == false && c.DisabledReason != null && 
+                               c.DisabledReason.Contains("automatic temporary", StringComparison.OrdinalIgnoreCase))
                     .ToList();
 
-                foreach (var account in tempBlockedAccounts)
+                var processedCount = 0;
+                var unlockedCount = 0;
+
+                foreach (var account in potentialTempBlockedAccounts)
                 {
-                    if (account.TempBlockEndTime.Value <= currentTimestamp)
+                    long? endTimestamp = account.TempBlockEndTime;
+                    
+                    // 如果TempBlockEndTime为空，尝试从DisabledReason解析
+                    if (!endTimestamp.HasValue)
                     {
-                        // 临时封禁已到期，启用账号
-                        _logger.Information($"账号 {account.GetDisplay()} 临时封禁已到期，自动启用账号");
+                        endTimestamp = account.DisabledReason.ParseDiscordTimestamp();
+                        if (endTimestamp.HasValue)
+                        {
+                            // 更新数据库中的TempBlockEndTime字段
+                            account.TempBlockEndTime = endTimestamp.Value;
+                            DbHelper.Instance.AccountStore.Update("TempBlockEndTime", account);
+                            _logger.Information($"账号 {account.GetDisplay()} 从禁用原因中解析到时间戳: {endTimestamp.Value}");
+                        }
+                    }
+                    
+                    if (endTimestamp.HasValue)
+                    {
+                        processedCount++;
                         
-                        account.Enable = true;
-                        account.DisabledReason = null;
-                        account.TempBlockEndTime = null;
-                        account.Lock = false; // 解除锁定
-                        
-                        DbHelper.Instance.AccountStore.Update(account);
-                        
-                        // 清除缓存
-                        var discordInstance = _discordLoadBalancer.GetDiscordInstance(account.ChannelId);
-                        discordInstance?.ClearAccountCache(account.Id);
-                        
-                        // 发送解封邮件通知
-                        EmailJob.Instance.EmailSend(_properties.Smtp, $"MJ账号解封通知-{account.ChannelId}",
-                            $"{account.ChannelId} 临时封禁已到期，账号已自动启用");
+                        if (endTimestamp.Value <= currentTimestamp)
+                        {
+                            // 临时封禁已到期，启用账号
+                            _logger.Information($"账号 {account.GetDisplay()} 临时封禁已到期，自动启用账号");
+                            
+                            account.Enable = true;
+                            account.DisabledReason = null;
+                            account.TempBlockEndTime = null;
+                            account.Lock = false; // 解除锁定
+                            
+                            DbHelper.Instance.AccountStore.Update(account);
+                            
+                            // 清除缓存
+                            var discordInstance = _discordLoadBalancer.GetDiscordInstance(account.ChannelId);
+                            discordInstance?.ClearAccountCache(account.Id);
+                            
+                            // 发送解封邮件通知
+                            EmailJob.Instance.EmailSend(_properties.Smtp, $"MJ账号解封通知-{account.ChannelId}",
+                                $"{account.ChannelId} 临时封禁已到期，账号已自动启用");
+                            
+                            unlockedCount++;
+                        }
+                    }
+                    else
+                    {
+                        _logger.Warning($"账号 {account.GetDisplay()} 标记为临时封禁但无法解析时间戳: {account.DisabledReason}");
                     }
                 }
 
-                if (tempBlockedAccounts.Count > 0)
+                if (processedCount > 0)
                 {
-                    _logger.Information($"检查了 {tempBlockedAccounts.Count} 个临时封禁账号");
+                    _logger.Information($"检查了 {processedCount} 个临时封禁账号，解封了 {unlockedCount} 个账号");
                 }
             }
             catch (Exception ex)
