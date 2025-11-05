@@ -592,9 +592,18 @@ namespace Midjourney.API.Controllers
                     return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "extend操作需要提供taskId"));
                 }
 
-                if (!videoDTO.Index.HasValue || videoDTO.Index < 1 || videoDTO.Index > 4)
+                // 兼容0-3和1-4两种index格式
+                if (!videoDTO.Index.HasValue || videoDTO.Index < 0 || videoDTO.Index > 4)
                 {
-                    return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "extend操作需要提供有效的index (1-4)"));
+                    return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "extend操作需要提供有效的index"));
+                }
+
+                // 如果传入的是0-3，转换为1-4
+                var actualIndex = videoDTO.Index.Value;
+                if (actualIndex >= 0 && actualIndex <= 3)
+                {
+                    actualIndex = actualIndex + 1;  // 0→1, 1→2, 2→3, 3→4
+                    _logger.LogInformation("视频扩展index从0-3转换为1-4: {OldIndex} → {NewIndex}", videoDTO.Index.Value, actualIndex);
                 }
 
                 var task = NewTask(videoDTO);
@@ -606,7 +615,7 @@ namespace Midjourney.API.Controllers
                 // 调用视频扩展方法
                 return Ok(_taskService.SubmitVideoExtend(
                     videoDTO.TaskId, 
-                    videoDTO.Index.Value, 
+                    actualIndex,  // 使用转换后的index (1-4)
                     videoDTO.Prompt?.Trim() ?? "", 
                     videoDTO.Motion ?? "low", 
                     task));
