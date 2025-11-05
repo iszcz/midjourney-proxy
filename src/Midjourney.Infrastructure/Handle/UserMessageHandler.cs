@@ -141,34 +141,58 @@ namespace Midjourney.Infrastructure.Handle
                 }
             }
 
-            // 优先级4: 通过FormatPrompt匹配
+            // 优先级4: 通过FormatPrompt匹配（仅精确匹配，避免误匹配）
             if (task == null)
             {
                 var prompt = finalPrompt.FormatPrompt();
 
                 if (!string.IsNullOrWhiteSpace(prompt))
                 {
-                    task = instance
+                    var candidateTasks = instance
                         .FindRunningTask(c =>
                         (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED)
                         && (c.BotType == botType || c.RealBotType == botType)
                         && !string.IsNullOrWhiteSpace(c.PromptEn)
-                        && (c.PromptEn.FormatPrompt() == prompt || c.PromptEn.FormatPrompt().EndsWith(prompt) || prompt.StartsWith(c.PromptEn.FormatPrompt())))
-                        .OrderBy(c => c.StartTime).FirstOrDefault();
+                        && c.PromptEn.FormatPrompt() == prompt)  // ✅ 仅精确匹配，移除危险的EndsWith/StartsWith
+                        .OrderBy(c => c.StartTime)
+                        .ToList();
+                    
+                    // 如果有多个相同prompt的任务，只取第一个（最早的）
+                    if (candidateTasks.Count > 0)
+                    {
+                        task = candidateTasks.First();
+                        if (candidateTasks.Count > 1)
+                        {
+                            Log.Warning("USER FormatPrompt匹配发现多个相同提示词的任务, Count: {Count}, TaskId: {TaskId}, Prompt: {Prompt}", 
+                                candidateTasks.Count, task.Id, prompt.Substring(0, Math.Min(50, prompt.Length)));
+                        }
+                    }
                 }
             }
 
-            // 优先级5: 通过FormatPromptParam匹配
+            // 优先级5: 通过FormatPromptParam匹配（仅精确匹配，避免误匹配）
             if (task == null)
             {
                 var prompt = finalPrompt.FormatPromptParam();
                 if (!string.IsNullOrWhiteSpace(prompt))
                 {
-                    task = instance
+                    var candidateTasks = instance
                             .FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
                             (c.BotType == botType || c.RealBotType == botType) && !string.IsNullOrWhiteSpace(c.PromptEn)
-                            && (c.PromptEn.FormatPromptParam() == prompt || c.PromptEn.FormatPromptParam().EndsWith(prompt) || prompt.StartsWith(c.PromptEn.FormatPromptParam())))
-                            .OrderBy(c => c.StartTime).FirstOrDefault();
+                            && c.PromptEn.FormatPromptParam() == prompt)  // ✅ 仅精确匹配，移除危险的EndsWith/StartsWith
+                            .OrderBy(c => c.StartTime)
+                            .ToList();
+                    
+                    // 如果有多个相同prompt的任务，只取第一个（最早的）
+                    if (candidateTasks.Count > 0)
+                    {
+                        task = candidateTasks.First();
+                        if (candidateTasks.Count > 1)
+                        {
+                            Log.Warning("USER FormatPromptParam匹配发现多个相同提示词的任务, Count: {Count}, TaskId: {TaskId}, Prompt: {Prompt}", 
+                                candidateTasks.Count, task.Id, prompt.Substring(0, Math.Min(50, prompt.Length)));
+                        }
+                    }
                 }
             }
 
@@ -202,29 +226,61 @@ namespace Midjourney.Infrastructure.Handle
                             .OrderBy(c => c.StartTime).FirstOrDefault();
                     }
 
-                    // 最后才使用原有的模糊匹配，但增加时间窗口限制
+                    // 最后才使用原有的模糊匹配，但增加时间窗口限制和唯一性保证
                     if (task == null)
                     {
-                        // 只匹配最近5分钟内的任务，避免匹配到太旧的任务
-                        var cutoffTime = DateTimeOffset.Now.AddMinutes(-5).ToUnixTimeMilliseconds();
-                        task = instance.FindRunningTask(c => 
+                        // 缩短时间窗口到2分钟，减少误匹配概率
+                        var cutoffTime = DateTimeOffset.Now.AddMinutes(-2).ToUnixTimeMilliseconds();
+                        var candidateTasks = instance.FindRunningTask(c => 
                             (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
                             (c.BotType == botType || c.RealBotType == botType) && 
                             c.Action == action &&
                             c.StartTime >= cutoffTime)
-                            .OrderBy(c => c.StartTime).FirstOrDefault();
+                            .OrderBy(c => c.StartTime)
+                            .ToList();
+                        
+                        // 如果只有一个候选任务，才认为匹配成功；如果有多个，说明无法准确区分，记录警告
+                        if (candidateTasks.Count == 1)
+                        {
+                            task = candidateTasks.First();
+                            Log.Warning("USER 使用模糊匹配找到任务, TaskId: {TaskId}, Action: {Action}, 建议优化任务提交时的唯一标识", 
+                                task.Id, action);
+                        }
+                        else if (candidateTasks.Count > 1)
+                        {
+                            Log.Error("USER 发现多个候选任务无法区分, Count: {Count}, Action: {Action}, MessageId: {MessageId}, 可能导致任务混淆！", 
+                                candidateTasks.Count, action, msgId);
+                            // 不匹配任何任务，避免错误匹配
+                            task = null;
+                        }
                     }
                 }
                 else
                 {
-                    // 其他任务类型使用原有逻辑，但增加时间窗口限制
-                    var cutoffTime = DateTimeOffset.Now.AddMinutes(-5).ToUnixTimeMilliseconds();
-                    task = instance.FindRunningTask(c => 
+                    // 其他任务类型使用原有逻辑，但增加时间窗口限制和唯一性保证
+                    var cutoffTime = DateTimeOffset.Now.AddMinutes(-2).ToUnixTimeMilliseconds();
+                    var candidateTasks = instance.FindRunningTask(c => 
                         (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
                         (c.BotType == botType || c.RealBotType == botType) && 
                         c.Action == action &&
                         c.StartTime >= cutoffTime)
-                        .OrderBy(c => c.StartTime).FirstOrDefault();
+                        .OrderBy(c => c.StartTime)
+                        .ToList();
+                    
+                    // 如果只有一个候选任务，才认为匹配成功；如果有多个，说明无法准确区分，记录警告
+                    if (candidateTasks.Count == 1)
+                    {
+                        task = candidateTasks.First();
+                        Log.Warning("USER 使用模糊匹配找到任务, TaskId: {TaskId}, Action: {Action}, 建议优化任务提交时的唯一标识", 
+                            task.Id, action);
+                    }
+                    else if (candidateTasks.Count > 1)
+                    {
+                        Log.Error("USER 发现多个候选任务无法区分, Count: {Count}, Action: {Action}, MessageId: {MessageId}, 可能导致任务混淆！", 
+                            candidateTasks.Count, action, msgId);
+                        // 不匹配任务，避免错误匹配
+                        task = null;
+                    }
                 }
             }
 

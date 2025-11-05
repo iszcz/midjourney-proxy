@@ -68,6 +68,12 @@ namespace Midjourney.Infrastructure.Dto
         public string EndImage { get; set; }
 
         /// <summary>
+        /// 批次大小，用于控制视频生成的批次数量
+        /// </summary>
+        [SwaggerSchema("批次大小", Description = "批次大小，范围通常为1-4")]
+        public int? BatchSize { get; set; }
+
+        /// <summary>
         /// 操作类型，extend表示视频扩展操作
         /// </summary>
         [SwaggerSchema("操作类型", Description = "extend表示视频扩展操作")]

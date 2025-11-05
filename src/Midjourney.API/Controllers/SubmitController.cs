@@ -712,6 +712,12 @@ namespace Midjourney.API.Controllers
                 finalPrompt += " --loop";
             }
 
+            // 添加批次大小参数
+            if (videoDTO.BatchSize.HasValue && videoDTO.BatchSize.Value > 0)
+            {
+                finalPrompt += $" --bs {videoDTO.BatchSize.Value}";
+            }
+
             // 构造 SubmitImagineDTO 并调用 Imagine 接口
             var imagineDTO = new SubmitImagineDTO
             {
