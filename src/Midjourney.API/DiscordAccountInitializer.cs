@@ -35,6 +35,8 @@ using Newtonsoft.Json.Linq;
 using RestSharp;
 using Serilog;
 
+using TaskStatus = Midjourney.Infrastructure.TaskStatus;
+
 namespace Midjourney.API
 {
     /// <summary>
