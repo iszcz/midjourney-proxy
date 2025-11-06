@@ -684,9 +684,38 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     // 每 500ms
                     await Task.Delay(500);
 
+                    // ✅ 关键修复：检查WebSocket连接状态，防止连接断开后任务永久卡住
+                    if (!IsAlive)
+                    {
+                        _logger.Error("任务等待期间实例变为不可用 [{AccountDisplay}], TaskId: {TaskId}, Status: {Status}, WebSocketRunning: {WsRunning}, AccountEnable: {AccountEnable}, Elapsed: {Elapsed}s", 
+                            Account.GetDisplay(), info.Id, info.Status, WebSocketManager?.Running ?? false, Account?.Enable ?? false, sw.ElapsedMilliseconds / 1000);
+                        
+                        info.Fail($"实例不可用 - WebSocket连接已断开，任务无法继续 (等待了 {sw.ElapsedMilliseconds / 1000}秒)");
+                        SaveAndNotify(info);
+                        return;
+                    }
+
+                    // 每30秒输出一次诊断日志，帮助追踪卡住的任务
+                    if (sw.ElapsedMilliseconds > 0 && sw.ElapsedMilliseconds % 30000 < 500)
+                    {
+                        _logger.Warning("任务等待中 [{AccountDisplay}], TaskId: {TaskId}, Status: {Status}, Nonce: {Nonce}, MessageId: {MessageId}, Elapsed: {Elapsed}s, WebSocketRunning: {WsRunning}", 
+                            Account.GetDisplay(), info.Id, info.Status, info.Nonce, info.MessageId, sw.ElapsedMilliseconds / 1000, WebSocketManager?.Running ?? false);
+                        
+                        // 检查任务是否在运行列表中
+                        var isInRunning = _runningTasks.ContainsKey(info.Id);
+                        if (!isInRunning)
+                        {
+                            _logger.Error("任务不在运行列表中 [{AccountDisplay}], TaskId: {TaskId}, 这可能导致任务永远无法完成", 
+                                Account.GetDisplay(), info.Id);
+                        }
+                    }
+
                     if (sw.ElapsedMilliseconds > timeoutMin * 60 * 1000)
                     {
-                        info.Fail($"执行超时 {timeoutMin} 分钟");
+                        _logger.Error("任务执行超时 [{AccountDisplay}], TaskId: {TaskId}, Timeout: {Timeout}min, Status: {Status}, Nonce: {Nonce}, MessageId: {MessageId}, InteractionMetadataId: {MetadataId}, WebSocketRunning: {WsRunning}", 
+                            Account.GetDisplay(), info.Id, timeoutMin, info.Status, info.Nonce, info.MessageId, info.InteractionMetadataId, WebSocketManager?.Running ?? false);
+                        
+                        info.Fail($"执行超时 {timeoutMin} 分钟 (Status: {info.Status}, WebSocket: {(WebSocketManager?.Running ?? false ? "Running" : "Stopped")})");
                         SaveAndNotify(info);
                         return;
                     }
