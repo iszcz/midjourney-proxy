@@ -1275,30 +1275,12 @@ namespace Midjourney.Infrastructure
                     {
                         var nonce = noneElement.GetString();
 
-                        _logger.Debug($"用户消息包含Nonce, {messageType}, id: {id}, nonce: {nonce}");
+                        _logger.Debug($"用户消息, {messageType}, id: {id}, nonce: {nonce}");
 
                         if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(nonce))
                         {
                             // 设置 none 对应的任务 id
                             var task = _discordInstance.GetRunningTaskByNonce(nonce);
-                            
-                            if (task != null)
-                            {
-                                _logger.Information("通过Nonce找到任务, TaskId: {TaskId}, Status: {Status}, Nonce: {Nonce}, MessageType: {MessageType}, MessageId: {MessageId}", 
-                                    task.Id, task.Status, nonce, messageType, id);
-                            }
-                            else
-                            {
-                                _logger.Warning("未通过Nonce找到任务, Nonce: {Nonce}, MessageType: {MessageType}, MessageId: {MessageId}, AccountId: {AccountId}", 
-                                    nonce, messageType, id, Account.ChannelId);
-                                
-                                // 输出当前所有运行中的任务
-                                var runningTasks = _discordInstance.GetRunningTasks().Where(t => t.Status == TaskStatus.SUBMITTED || t.Status == TaskStatus.IN_PROGRESS).ToList();
-                                _logger.Warning("当前运行中的任务数: {Count}, 任务列表: {Tasks}", 
-                                    runningTasks.Count, 
-                                    string.Join(", ", runningTasks.Select(t => $"{t.Id}(Nonce:{t.Nonce?.Substring(0, Math.Min(8, t.Nonce?.Length ?? 0))})")));
-                            }
-                            
                             if (task != null && task.Status != TaskStatus.SUCCESS && task.Status != TaskStatus.FAILURE)
                             {
                                 if (isPrivareChannel)

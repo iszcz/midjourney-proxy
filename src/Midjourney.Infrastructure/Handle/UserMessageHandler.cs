@@ -114,18 +114,8 @@ namespace Midjourney.Infrastructure.Handle
             string imageUrl = GetImageUrl(message);
             string messageHash = discordHelper.GetMessageHash(imageUrl);
 
-            // 记录开始匹配任务
-            Log.Information("USER 开始匹配任务, MessageId: {MessageId}, Action: {Action}, FinalPrompt: {Prompt}, Hash: {Hash}", 
-                msgId, action, finalPrompt?.Substring(0, Math.Min(100, finalPrompt?.Length ?? 0)), messageHash?.Substring(0, Math.Min(20, messageHash?.Length ?? 0)));
-
             // 优先级1: 通过MessageId匹配
             var task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && c.MessageId == msgId).FirstOrDefault();
-            
-            if (task != null)
-            {
-                Log.Information("USER 通过MessageId找到任务 (优先级1), TaskId: {TaskId}, MessageId: {MessageId}", 
-                    task.Id, msgId);
-            }
             
             // 优先级2: 通过InteractionMetadataId匹配
             if (task == null && !string.IsNullOrWhiteSpace(message.InteractionMetadata?.Id))
@@ -296,22 +286,8 @@ namespace Midjourney.Infrastructure.Handle
 
             if (task == null || task.Status == TaskStatus.SUCCESS || task.Status == TaskStatus.FAILURE)
             {
-                if (task == null)
-                {
-                    Log.Warning("USER 未找到匹配的任务, MessageId: {MessageId}, Action: {Action}, FinalPrompt: {Prompt}", 
-                        msgId, action, finalPrompt?.Substring(0, Math.Min(100, finalPrompt?.Length ?? 0)));
-                    
-                    // 输出当前所有运行中的任务，帮助诊断
-                    var runningTasks = instance.GetRunningTasks().Where(t => t.Status == TaskStatus.SUBMITTED || t.Status == TaskStatus.IN_PROGRESS).ToList();
-                    Log.Warning("当前运行中的任务数: {Count}, 任务列表: {Tasks}", 
-                        runningTasks.Count, 
-                        string.Join(", ", runningTasks.Select(t => $"{t.Id}({t.Status},Nonce:{t.Nonce?.Substring(0, Math.Min(10, t.Nonce?.Length ?? 0))})")));
-                }
                 return;
             }
-
-            Log.Information("USER 成功匹配任务, TaskId: {TaskId}, MessageId: {MessageId}, Status: {Status}, Action: {Action}", 
-                task.Id, msgId, task.Status, action);
 
             task.MessageId = msgId;
 

@@ -35,8 +35,6 @@ using Newtonsoft.Json.Linq;
 using RestSharp;
 using Serilog;
 
-using TaskStatus = Midjourney.Infrastructure.TaskStatus;
-
 namespace Midjourney.API
 {
     /// <summary>
@@ -382,9 +380,6 @@ namespace Midjourney.API
                         // 检查临时封禁账号是否到期
                         await CheckTempBlockedAccounts();
 
-                        // 检查并清理卡住的任务
-                        await CheckAndCleanStuckTasks();
-
                         // 检查并删除旧的文档
                         CheckAndDeleteOldDocuments();
                     }
@@ -484,117 +479,6 @@ namespace Midjourney.API
             {
                 _logger.Error(ex, "检查临时封禁账号异常");
             }
-        }
-
-        /// <summary>
-        /// 检查并清理卡住的任务
-        /// </summary>
-        private async Task CheckAndCleanStuckTasks()
-        {
-            try
-            {
-                var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var taskStore = DbHelper.Instance.TaskStore;
-                
-                // 查找所有卡在 SUBMITTED 或 IN_PROGRESS 状态的任务
-                var stuckTasks = taskStore.Where(c => 
-                    (c.Status == TaskStatus.SUBMITTED || c.Status == TaskStatus.IN_PROGRESS))
-                    .ToList();
-
-                if (stuckTasks.Count == 0)
-                {
-                    return;
-                }
-
-                var cleanedCount = 0;
-                var submittedTimeoutCount = 0;
-                var inProgressTimeoutCount = 0;
-
-                foreach (var task in stuckTasks)
-                {
-                    try
-                    {
-                        // 计算任务已经运行的时间
-                        var startTime = task.StartTime > 0 ? task.StartTime : task.SubmitTime;
-                        var elapsed = now - startTime;
-                        var elapsedMinutes = elapsed / (60 * 1000);
-
-                        // 获取该账号的超时设置，如果找不到账号则使用默认值10分钟
-                        var timeoutMin = 10;
-                        if (!string.IsNullOrWhiteSpace(task.InstanceId))
-                        {
-                            var instance = _discordLoadBalancer.GetDiscordInstance(task.InstanceId);
-                            if (instance?.Account != null)
-                            {
-                                timeoutMin = instance.Account.TimeoutMinutes;
-                            }
-                        }
-
-                        // 对于 SUBMITTED 状态：超过超时时间的一半就认为可能卡住了
-                        // 对于 IN_PROGRESS 状态：超过完整超时时间才标记为失败
-                        var shouldClean = false;
-                        var reason = "";
-
-                        if (task.Status == TaskStatus.SUBMITTED && elapsedMinutes > timeoutMin / 2)
-                        {
-                            shouldClean = true;
-                            reason = $"任务卡在SUBMITTED状态超过{elapsedMinutes}分钟（超时阈值：{timeoutMin/2}分钟）";
-                            submittedTimeoutCount++;
-                        }
-                        else if (task.Status == TaskStatus.IN_PROGRESS && elapsedMinutes > timeoutMin)
-                        {
-                            shouldClean = true;
-                            reason = $"任务卡在IN_PROGRESS状态超过{elapsedMinutes}分钟（超时阈值：{timeoutMin}分钟）";
-                            inProgressTimeoutCount++;
-                        }
-
-                        if (shouldClean)
-                        {
-                            _logger.Warning("检测到卡住的任务，TaskId: {TaskId}, Status: {Status}, Elapsed: {Elapsed}分钟, Reason: {Reason}", 
-                                task.Id, task.Status, elapsedMinutes, reason);
-
-                            // 标记任务为失败
-                            task.Status = TaskStatus.FAILURE;
-                            task.FailReason = reason;
-                            task.Description = reason;
-                            task.FinishTime = now;
-                            task.Progress = "";
-
-                            taskStore.Update(task);
-
-                            // 尝试从运行队列中移除任务
-                            if (!string.IsNullOrWhiteSpace(task.InstanceId))
-                            {
-                                var instance = _discordLoadBalancer.GetDiscordInstance(task.InstanceId);
-                                if (instance != null)
-                                {
-                                    instance.RemoveRunningTask(task);
-                                    _logger.Information("已从运行队列移除卡住的任务，TaskId: {TaskId}, InstanceId: {InstanceId}", 
-                                        task.Id, task.InstanceId);
-                                }
-                            }
-
-                            cleanedCount++;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.Error(ex, "清理卡住任务异常，TaskId: {TaskId}", task.Id);
-                    }
-                }
-
-                if (cleanedCount > 0)
-                {
-                    _logger.Information("清理卡住的任务完成，总计: {TotalCount}, SUBMITTED超时: {SubmittedCount}, IN_PROGRESS超时: {InProgressCount}", 
-                        cleanedCount, submittedTimeoutCount, inProgressTimeoutCount);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex, "检查并清理卡住任务异常");
-            }
-
-            await Task.CompletedTask;
         }
 
         /// <summary>
