@@ -284,10 +284,18 @@ namespace Midjourney.Infrastructure.LoadBalancer
 
                 try
                 {
-                    // 如果队列中没有任务，则等待信号通知
+                    // 如果队列中没有任务，则等待信号通知（使用超时等待，避免长时间阻塞）
                     if (_queueTasks.Count <= 0 && _priorityQueueTasks.Count <= 0)
                     {
-                        _mre.WaitOne();
+                        // 🔧 修复：使用超时等待（5秒），避免实例不可用时永久阻塞
+                        _mre.WaitOne(5000);  // 最多等待5秒
+                        
+                        // 如果实例不可用（如WebSocket重连中），继续等待
+                        if (!IsAlive)
+                        {
+                            _logger.Debug("频道 {@0} 实例不可用（WebSocket重连中?），跳过本次循环", Account.ChannelId);
+                            continue;
+                        }
                     }
 
                     // 🔧 修复：添加信号量健康检查和超时机制
@@ -333,9 +341,38 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     }
 
                     _logger.Information("频道 {@0} 准备检查信号量. 当前 Semaphore.MaxParallelism: {@1}, 当前 Account.CoreSize (from property): {@2}", Account.ChannelId, _semaphoreSlimLock.MaxParallelism, Account.CoreSize);
-                    // 如果并发数修改，判断信号最大值是否为 Account.CoreSize
+                    
+                    // 🔧 修复：如果并发数修改，判断信号最大值是否为 Account.CoreSize（添加超时保护）
+                    var maxParallelismAdjustCount = 0;
                     while (_semaphoreSlimLock.MaxParallelism != Account.CoreSize)
                     {
+                        maxParallelismAdjustCount++;
+                        
+                        // 每5次尝试（2.5秒）记录一次等待状态
+                        if (maxParallelismAdjustCount % 5 == 0)
+                        {
+                            _logger.Warning("频道 {@0} 等待调整信号量 - 目标: {Target}, 当前: {Current}, 已持有: {Held}, 可用: {Available}, 运行任务: {Running}", 
+                                Account.ChannelId, 
+                                Account.CoreSize,
+                                _semaphoreSlimLock.MaxParallelism,
+                                _semaphoreSlimLock.CurrentlyHeldCount,
+                                _semaphoreSlimLock.AvailableCount,
+                                _runningTasks.Count);
+                        }
+                        
+                        // 🚨 添加超时保护：如果等待超过60秒（120次尝试），放弃调整
+                        if (maxParallelismAdjustCount > 120)
+                        {
+                            _logger.Error("频道 {@0} 调整信号量超时(60秒)！跳过调整，使用当前值: {Current}, 目标值: {Target}, 已持有: {Held}", 
+                                Account.ChannelId, 
+                                _semaphoreSlimLock.MaxParallelism,
+                                Account.CoreSize,
+                                _semaphoreSlimLock.CurrentlyHeldCount);
+                            
+                            // 跳出循环，使用当前的信号量值继续运行
+                            break;
+                        }
+                        
                         // 重新设置信号量
                         var oldMax = _semaphoreSlimLock.MaxParallelism;
                         var newMax = Math.Max(1, Math.Min(Account.CoreSize, 12));
@@ -351,6 +388,18 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     var taskToExecute = (TaskInfo: (TaskInfo)null, Handler: (Func<Task<Message>>)null);
                     bool isFromPriorityQueue = false;
                     
+                    // 🔧 添加诊断：检查队列状态
+                    var priorityQueueCount = _priorityQueueTasks.Count;
+                    var normalQueueCount = _queueTasks.Count;
+                    var semaphoreAvailable = _semaphoreSlimLock.IsLockAvailable();
+                    
+                    // 如果有队列任务但信号量不可用，记录详细信息
+                    if ((priorityQueueCount > 0 || normalQueueCount > 0) && !semaphoreAvailable)
+                    {
+                        _logger.Debug("频道 {@0} 有队列任务但信号量不可用 - 优先队列: {Priority}, 普通队列: {Normal}, 可用信号量: {Available}, 运行任务: {Running}", 
+                            Account.ChannelId, priorityQueueCount, normalQueueCount, _semaphoreSlimLock.AvailableCount, _runningTasks.Count);
+                    }
+                    
                     // 首先尝试从优先队列获取任务
                     if (_priorityQueueTasks.TryPeek(out var priorityInfo))
                     {
@@ -361,6 +410,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                             {
                                 taskToExecute = priorityInfo;
                                 isFromPriorityQueue = true;
+                                _logger.Debug("频道 {@0} 从优先队列取出任务 {@1}", Account.ChannelId, priorityInfo.Item1?.Id);
                             }
                         }
                     }
@@ -375,7 +425,12 @@ namespace Midjourney.Infrastructure.LoadBalancer
                             {
                                 taskToExecute = info;
                                 isFromPriorityQueue = false;
+                                _logger.Debug("频道 {@0} 从普通队列取出任务 {@1}", Account.ChannelId, info.Item1?.Id);
                             }
+                        }
+                        else
+                        {
+                            _logger.Debug("频道 {@0} 普通队列有任务 {@1} 但信号量不可用", Account.ChannelId, info.Item1?.Id);
                         }
                     }
                     
