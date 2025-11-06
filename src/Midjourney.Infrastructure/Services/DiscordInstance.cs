@@ -290,10 +290,45 @@ namespace Midjourney.Infrastructure.LoadBalancer
                         _mre.WaitOne();
                     }
 
-                    // 判断是否还有资源可用
+                    // 🔧 修复：添加信号量健康检查和超时机制
+                    var semaphoreWaitCount = 0;
                     while (!_semaphoreSlimLock.IsLockAvailable())
                     {
-                        // 等待
+                        semaphoreWaitCount++;
+                        
+                        // 每等待10次（1秒）检查一次健康状态
+                        if (semaphoreWaitCount % 10 == 0)
+                        {
+                            var queueCount = _queueTasks.Count + _priorityQueueTasks.Count;
+                            var runningCount = _runningTasks.Count;
+                            var heldCount = _semaphoreSlimLock.CurrentlyHeldCount;
+                            var availableCount = _semaphoreSlimLock.AvailableCount;
+                            
+                            _logger.Warning("频道 {@0} 信号量等待中 - 队列任务: {QueueCount}, 运行任务: {RunningCount}, 已持有信号量: {HeldCount}, 可用信号量: {AvailableCount}", 
+                                Account.ChannelId, queueCount, runningCount, heldCount, availableCount);
+                            
+                            // 🚨 检测信号量泄漏：持有数量远大于实际运行任务数
+                            if (heldCount > runningCount + 2 && runningCount == 0 && queueCount > 0)
+                            {
+                                _logger.Error("频道 {@0} 检测到信号量泄漏！已持有: {HeldCount}, 实际运行: {RunningCount}, 队列等待: {QueueCount}", 
+                                    Account.ChannelId, heldCount, runningCount, queueCount);
+                            }
+                        }
+                        
+                        // 🔧 添加超时保护：如果等待超过30秒，记录错误并跳出
+                        if (semaphoreWaitCount > 300)  // 300 * 100ms = 30秒
+                        {
+                            _logger.Error("频道 {@0} 信号量等待超时(30秒)，可能存在死锁！队列: {QueueCount}, 运行: {RunningCount}, 已持有: {HeldCount}, 可用: {AvailableCount}", 
+                                Account.ChannelId, 
+                                _queueTasks.Count + _priorityQueueTasks.Count,
+                                _runningTasks.Count,
+                                _semaphoreSlimLock.CurrentlyHeldCount,
+                                _semaphoreSlimLock.AvailableCount);
+                            
+                            // 跳出等待循环，让系统继续运行（可能会触发catch块）
+                            break;
+                        }
+                        
                         Thread.Sleep(100);
                     }
 
@@ -399,8 +434,9 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 {
                     _logger.Error(ex, $"后台作业执行异常 {Account?.ChannelId}");
 
-                    // 停止 1min
-                    Thread.Sleep(1000 * 60);
+                    // 🔧 修复：停止时间从60秒改为5秒，避免长时间阻塞
+                    // 原代码：Thread.Sleep(1000 * 60); // 1分钟太久
+                    Thread.Sleep(5000);  // 改为5秒
                 }
             }
         }
@@ -564,9 +600,13 @@ namespace Midjourney.Infrastructure.LoadBalancer
         /// <returns>异步任务</returns>
         private async Task ExecuteTaskAsync(TaskInfo info, Func<Task<Message>> discordSubmit)
         {
+            var lockAcquired = false;
             try
             {
                 await _semaphoreSlimLock.LockAsync();
+                lockAcquired = true;
+                
+                _logger.Debug("[{@0}] 信号量已获取，开始执行任务 {@1}, 当前运行任务数: {@2}", Account.GetDisplay(), info.Id, _runningTasks.Count);
 
                 _runningTasks.TryAdd(info.Id, info);
 
@@ -574,6 +614,8 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 var waitTime = 0;
                 while (!IsAlive)
                 {
+                    _logger.Warning("[{@0}] 等待实例可用 {@1}，已等待: {@2}秒", Account.GetDisplay(), info.Id, waitTime / 1000);
+                    
                     // 等待 1s
                     await Task.Delay(1000);
 
@@ -588,7 +630,8 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 // 判断当前实例是否可用
                 if (!IsAlive)
                 {
-                    _logger.Debug("[{@0}] task error, id: {@1}, status: {@2}", Account.GetDisplay(), info.Id, info.Status);
+                    _logger.Warning("[{@0}] task error (实例不可用), id: {@1}, status: {@2}, 等待时间: {@3}秒", 
+                        Account.GetDisplay(), info.Id, info.Status, waitTime / 1000);
 
                     info.Fail("实例不可用");
                     SaveAndNotify(info);
@@ -688,7 +731,24 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 _runningTasks.TryRemove(info.Id, out _);
                 _taskFutureMap.TryRemove(info.Id, out _);
 
-                _semaphoreSlimLock.Unlock();
+                // 🔧 修复：添加详细日志，追踪信号量释放
+                if (lockAcquired)
+                {
+                    try
+                    {
+                        _semaphoreSlimLock.Unlock();
+                        _logger.Debug("[{@0}] 信号量已释放，任务 {@1} 完成, 剩余运行任务数: {@2}", 
+                            Account.GetDisplay(), info.Id, _runningTasks.Count);
+                    }
+                    catch (Exception unlockEx)
+                    {
+                        _logger.Error(unlockEx, "[{@0}] 释放信号量时异常！任务: {@1}", Account.GetDisplay(), info.Id);
+                    }
+                }
+                else
+                {
+                    _logger.Warning("[{@0}] 任务 {@1} 未获取到信号量就退出了", Account.GetDisplay(), info.Id);
+                }
 
                 SaveAndNotify(info);
             }
