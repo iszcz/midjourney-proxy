@@ -753,6 +753,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 var timeoutMin = Account.TimeoutMinutes;
                 var sw = new Stopwatch();
                 sw.Start();
+                var lastLogTime = 0L;
 
                 while (info.Status == TaskStatus.SUBMITTED || info.Status == TaskStatus.IN_PROGRESS)
                 {
@@ -760,9 +761,19 @@ namespace Midjourney.Infrastructure.LoadBalancer
 
                     // 每 500ms
                     await Task.Delay(500);
+                    
+                    // 🔍 诊断：每30秒记录一次任务执行状态，帮助定位卡住的任务
+                    if (sw.ElapsedMilliseconds - lastLogTime > 30000)
+                    {
+                        lastLogTime = sw.ElapsedMilliseconds;
+                        _logger.Information("⏳ 任务执行中 {TaskId}, 状态: {Status}, 进度: {Progress}, 已执行: {Elapsed}秒, 超时设置: {Timeout}分钟", 
+                            info.Id, info.Status, info.Progress, sw.ElapsedMilliseconds / 1000, timeoutMin);
+                    }
 
                     if (sw.ElapsedMilliseconds > timeoutMin * 60 * 1000)
                     {
+                        _logger.Warning("⏰ 任务超时 {TaskId}, 状态: {Status}, 进度: {Progress}, 执行时间: {Elapsed}秒", 
+                            info.Id, info.Status, info.Progress, sw.ElapsedMilliseconds / 1000);
                         info.Fail($"执行超时 {timeoutMin} 分钟");
                         SaveAndNotify(info);
                         return;
