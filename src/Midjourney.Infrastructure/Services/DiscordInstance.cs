@@ -41,7 +41,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
 {
     /// <summary>
     /// Discord 实例
-    /// 实现了IDiscordInstance接口，负责处理Discord相关的任务管理和执行。
+    /// 实现了IDiscordInstance接口，负责处理Discord相关的任务管理和执行
     /// </summary>
     public class DiscordInstance
     {
