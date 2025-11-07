@@ -577,12 +577,6 @@ namespace Midjourney.API.Controllers
         [HttpPost("video")]
         public async Task<ActionResult<SubmitResultVO>> Video([FromBody] SubmitVideoDTO videoDTO)
         {
-            // 验证prompt和image不能都为空
-            if (string.IsNullOrWhiteSpace(videoDTO.Prompt) && string.IsNullOrWhiteSpace(videoDTO.Image))
-            {
-                return Ok(SubmitResultVO.Fail(ReturnCode.VALIDATION_ERROR, "prompt和image不能都为空"));
-            }
-
             // 处理视频扩展操作
             if (!string.IsNullOrWhiteSpace(videoDTO.Action) && videoDTO.Action.ToLowerInvariant() == "extend")
             {
