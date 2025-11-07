@@ -288,12 +288,20 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     if (_queueTasks.Count <= 0 && _priorityQueueTasks.Count <= 0)
                     {
                         // 🔧 修复：使用超时等待（5秒），避免实例不可用时永久阻塞
-                        _mre.WaitOne(5000);  // 最多等待5秒
+                        var signaled = _mre.WaitOne(5000);  // 最多等待5秒
+                        
+                        // 🔍 诊断：记录等待超时（帮助定位Running循环停止的原因）
+                        if (!signaled)
+                        {
+                            _logger.Information("⏱️ 频道 {@0} 队列空闲等待超时(5秒), IsAlive: {IsAlive}, Running任务: {Running}", 
+                                Account.ChannelId, IsAlive, _runningTasks.Count);
+                        }
                         
                         // 如果实例不可用（如WebSocket重连中），继续等待
                         if (!IsAlive)
                         {
-                            _logger.Debug("频道 {@0} 实例不可用（WebSocket重连中?），跳过本次循环", Account.ChannelId);
+                            _logger.Warning("⚠️ 频道 {@0} 实例不可用（WebSocket重连中?），跳过本次循环, Running: {Running}", 
+                                Account.ChannelId, WebSocketManager?.Running ?? false);
                             continue;
                         }
                     }
@@ -494,7 +502,14 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, $"后台作业执行异常 {Account?.ChannelId}");
+                    // 🔍 增强诊断：记录详细的异常信息
+                    _logger.Error(ex, "🚨 后台作业执行异常 {ChannelId}, 异常类型: {ExceptionType}, 消息: {Message}, 队列: {Queue}, 运行: {Running}, 堆栈: {StackTrace}", 
+                        Account?.ChannelId, 
+                        ex.GetType().Name, 
+                        ex.Message,
+                        _queueTasks.Count + _priorityQueueTasks.Count,
+                        _runningTasks.Count,
+                        ex.StackTrace?.Split('\n')?[0] ?? "无堆栈");
 
                     // 🔧 修复：停止时间从60秒改为5秒，避免长时间阻塞
                     // 原代码：Thread.Sleep(1000 * 60); // 1分钟太久
