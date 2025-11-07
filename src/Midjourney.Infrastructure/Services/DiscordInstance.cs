@@ -393,10 +393,17 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     var normalQueueCount = _queueTasks.Count;
                     var semaphoreAvailable = _semaphoreSlimLock.IsLockAvailable();
                     
+                    // 🔍 诊断：每次循环都记录队列状态（如果有任务）
+                    if (priorityQueueCount > 0 || normalQueueCount > 0)
+                    {
+                        _logger.Information("🔍 频道 {@0} 队列状态 - 优先队列: {Priority}, 普通队列: {Normal}, 可用信号量: {Available}, 运行任务: {Running}", 
+                            Account.ChannelId, priorityQueueCount, normalQueueCount, _semaphoreSlimLock.AvailableCount, _runningTasks.Count);
+                    }
+                    
                     // 如果有队列任务但信号量不可用，记录详细信息
                     if ((priorityQueueCount > 0 || normalQueueCount > 0) && !semaphoreAvailable)
                     {
-                        _logger.Debug("频道 {@0} 有队列任务但信号量不可用 - 优先队列: {Priority}, 普通队列: {Normal}, 可用信号量: {Available}, 运行任务: {Running}", 
+                        _logger.Warning("⚠️ 频道 {@0} 有队列任务但信号量不可用 - 优先队列: {Priority}, 普通队列: {Normal}, 可用信号量: {Available}, 运行任务: {Running}", 
                             Account.ChannelId, priorityQueueCount, normalQueueCount, _semaphoreSlimLock.AvailableCount, _runningTasks.Count);
                     }
                     
@@ -410,7 +417,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                             {
                                 taskToExecute = priorityInfo;
                                 isFromPriorityQueue = true;
-                                _logger.Debug("频道 {@0} 从优先队列取出任务 {@1}", Account.ChannelId, priorityInfo.Item1?.Id);
+                                _logger.Information("✅ 频道 {@0} 从优先队列取出任务 {@1}", Account.ChannelId, priorityInfo.Item1?.Id);
                             }
                         }
                     }
@@ -425,12 +432,12 @@ namespace Midjourney.Infrastructure.LoadBalancer
                             {
                                 taskToExecute = info;
                                 isFromPriorityQueue = false;
-                                _logger.Debug("频道 {@0} 从普通队列取出任务 {@1}", Account.ChannelId, info.Item1?.Id);
+                                _logger.Information("✅ 频道 {@0} 从普通队列取出任务 {@1}", Account.ChannelId, info.Item1?.Id);
                             }
                         }
                         else
                         {
-                            _logger.Debug("频道 {@0} 普通队列有任务 {@1} 但信号量不可用", Account.ChannelId, info.Item1?.Id);
+                            _logger.Warning("⚠️ 频道 {@0} 普通队列有任务 {@1} 但信号量不可用", Account.ChannelId, info.Item1?.Id);
                         }
                     }
                     
