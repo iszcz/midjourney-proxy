@@ -602,7 +602,15 @@ namespace Midjourney.API.Controllers
 
                 var task = NewTask(videoDTO);
                 task.BotType = GetBotType(videoDTO.BotType);
-                task.Prompt = videoDTO.Prompt?.Trim() ?? "";
+                
+                // 构建extend的prompt，包含batchSize等参数
+                var extendPrompt = videoDTO.Prompt?.Trim() ?? "";
+                if (videoDTO.BatchSize.HasValue && videoDTO.BatchSize.Value > 0)
+                {
+                    extendPrompt += $" --bs {videoDTO.BatchSize.Value}";
+                }
+                
+                task.Prompt = extendPrompt;
 
                 NewTaskDoFilter(task, videoDTO.AccountFilter);
 
@@ -610,7 +618,7 @@ namespace Midjourney.API.Controllers
                 return Ok(_taskService.SubmitVideoExtend(
                     videoDTO.TaskId, 
                     actualIndex,  // 使用转换后的index (1-4)
-                    videoDTO.Prompt?.Trim() ?? "", 
+                    extendPrompt, 
                     videoDTO.Motion ?? "low", 
                     task));
             }

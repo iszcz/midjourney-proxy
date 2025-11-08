@@ -1610,7 +1610,33 @@ namespace Midjourney.Infrastructure.Services
             task.SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, sourceTask.GetProperty<string>(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, default));
 
             // 4. 先执行upscale操作，这将触发后续的extend流程
-            return SubmitUpscale(task, messageId, messageHash, index, messageFlags);
+            return SubmitVideoUpscale(task, messageId, messageHash, index, messageFlags);
+        }
+        
+        /// <summary>
+        /// 提交视频虚拟放大任务（用于视频扩展的第一步）
+        /// </summary>
+        private SubmitResultVO SubmitVideoUpscale(TaskInfo task, string targetMessageId, string targetMessageHash, int index, int messageFlags)
+        {
+            var instanceId = task.GetProperty<string>(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, default);
+            var discordInstance = _discordLoadBalancer.GetDiscordInstanceIsAlive(instanceId);
+            if (discordInstance == null || !discordInstance.IsAlive)
+            {
+                return SubmitResultVO.Fail(ReturnCode.NOT_FOUND, "账号不可用: " + instanceId);
+            }
+            if (!discordInstance.CanSubmitTask(task.IsPriority))
+            {
+                return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
+            }
+
+            // 视频的upscale customId格式: MJ::JOB::video_virtual_upscale::{index}::{messageHash}
+            var upscaleCustomId = $"MJ::JOB::video_virtual_upscale::{index}::{targetMessageHash}";
+            
+            Log.Information("提交VIDEO_EXTEND的upscale步骤: TaskId={TaskId}, CustomId={CustomId}", task.Id, upscaleCustomId);
+
+            return discordInstance.SubmitTaskAsync(task, async () =>
+                await discordInstance.ActionAsync(targetMessageId, upscaleCustomId, messageFlags,
+                task.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default), task));
         }
     }
 }

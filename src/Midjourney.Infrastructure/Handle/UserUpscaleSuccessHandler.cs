@@ -26,6 +26,7 @@ using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.LoadBalancer;
 using Midjourney.Infrastructure.Util;
 using Serilog;
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 namespace Midjourney.Infrastructure.Handle
@@ -39,6 +40,9 @@ namespace Midjourney.Infrastructure.Handle
         private const string CONTENT_REGEX_2 = "\\*\\*(.*)\\*\\* - Upscaled by <@\\d+> \\((.*?)\\)";
 
         private const string CONTENT_REGEX_U = "\\*\\*(.*)\\*\\* - Image #(\\d) <@\\d+>";
+        
+        // 视频upscale完成的消息格式（不包含"Upscaled"关键字）
+        private const string CONTENT_REGEX_VIDEO = "\\*\\*(.*)\\*\\* - <@\\d+> \\((.*?)\\)";
 
         public UserUpscaleSuccessHandler(DiscordLoadBalancer discordLoadBalancer, DiscordHelper discordHelper)
             : base(discordLoadBalancer, discordHelper)
@@ -63,6 +67,10 @@ namespace Midjourney.Infrastructure.Handle
 
             string content = GetMessageContent(message);
             var parseData = GetParseData(content);
+            
+            Log.Debug("UserUpscaleSuccessHandler处理消息: Type={Type}, HasImage={HasImage}, Content={Content}", 
+                messageType, HasImage(message), content?.Substring(0, Math.Min(100, content?.Length ?? 0)));
+            
             if (messageType == MessageType.CREATE && parseData != null && HasImage(message))
             {
                 if (parseData is UContentParseData uContentParseData)
@@ -73,6 +81,99 @@ namespace Midjourney.Infrastructure.Handle
                 {
                     FindAndFinishImageTask(instance, TaskAction.UPSCALE, parseData.Prompt, message);
                 }
+            }
+            // 检查是否为视频upscale完成消息（用于VIDEO_EXTEND）
+            else if (messageType == MessageType.CREATE && HasImage(message))
+            {
+                Log.Information("🔍 检查是否为视频upscale消息: Content={Content}", content);
+                var videoParseData = GetVideoUpscaleParseData(content);
+                if (videoParseData != null)
+                {
+                    Log.Information("✅ 检测到视频upscale完成消息，开始处理: {Content}", content);
+                    FindAndFinishVideoUpscaleTask(instance, videoParseData.Prompt, message);
+                }
+                else
+                {
+                    Log.Debug("❌ 不是视频upscale消息，正则不匹配");
+                }
+            }
+        }
+        
+        /// <summary>
+        /// 解析视频upscale完成消息
+        /// </summary>
+        private static ContentParseData GetVideoUpscaleParseData(string content)
+        {
+            var matcher = Regex.Match(content, CONTENT_REGEX_VIDEO);
+            if (!matcher.Success)
+            {
+                return null;
+            }
+
+            return new ContentParseData
+            {
+                Prompt = matcher.Groups[1].Value,
+                Status = matcher.Groups[2].Value
+            };
+        }
+        
+        /// <summary>
+        /// 查找并完成视频upscale任务
+        /// </summary>
+        private void FindAndFinishVideoUpscaleTask(DiscordInstance instance, string finalPrompt, EventData message)
+        {
+            string imageUrl = GetImageUrl(message);
+            string messageHash = discordHelper.GetMessageHash(imageUrl);
+
+            var msgId = GetMessageId(message);
+            
+            // 通过InteractionMetadataId匹配VIDEO_EXTEND任务
+            var task = instance.FindRunningTask(c => 
+                (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && 
+                c.Action == TaskAction.VIDEO_EXTEND &&
+                c.InteractionMetadataId == message.InteractionMetadata?.Id).FirstOrDefault();
+
+            if (task == null || task.Status == TaskStatus.SUCCESS || task.Status == TaskStatus.FAILURE)
+            {
+                return;
+            }
+
+            task.MessageId = msgId;
+
+            if (!task.MessageIds.Contains(msgId))
+                task.MessageIds.Add(msgId);
+
+            task.SetProperty(Constants.MJ_MESSAGE_HANDLED, true);
+            task.SetProperty(Constants.TASK_PROPERTY_FINAL_PROMPT, finalPrompt);
+            task.SetProperty(Constants.TASK_PROPERTY_MESSAGE_HASH, messageHash);
+            task.SetProperty(Constants.TASK_PROPERTY_MESSAGE_CONTENT, message.Content);
+
+            task.ImageUrl = imageUrl;
+            task.JobId = messageHash;
+
+            FinishTask(task, message);
+            task.Awake();
+            
+            // 在FinishTask之后检查是否为VIDEO_EXTEND任务（此时Buttons已经设置好了）
+            if (task.Action == TaskAction.VIDEO_EXTEND && 
+                !string.IsNullOrWhiteSpace(task.GetProperty<string>("EXTEND_PROMPT", default)) &&
+                task.GetProperty<string>("EXTEND_UPSCALE_COMPLETED", default) != "true")
+            {
+                Log.Information("🎬 检测到VIDEO_EXTEND任务upscale完成(User消息)，准备自动提交extend: TaskId={TaskId}, Action={Action}, ButtonsCount={Count}", 
+                    task.Id, task.Action, task.Buttons?.Count ?? 0);
+                
+                // 标记已处理，防止重复处理
+                task.SetProperty("EXTEND_UPSCALE_COMPLETED", "true");
+                
+                // 重置状态和进度（从SUCCESS改回SUBMITTED）
+                task.Status = TaskStatus.SUBMITTED;
+                task.Progress = "50%";
+                task.Description = "Upscale完成，正在进行extend操作...";
+                
+                // 保存状态变更
+                DbHelper.Instance.TaskStore.Update(task);
+                
+                AutoSubmitVideoExtend(instance, task);
             }
         }
 
@@ -173,6 +274,227 @@ namespace Midjourney.Infrastructure.Handle
 
             FinishTask(task, message);
             task.Awake();
+            
+            // 在FinishTask之后检查是否为VIDEO_EXTEND任务（此时Buttons已经设置好了）
+            if (task.Action == TaskAction.VIDEO_EXTEND && 
+                !string.IsNullOrWhiteSpace(task.GetProperty<string>("EXTEND_PROMPT", default)) &&
+                task.GetProperty<string>("EXTEND_UPSCALE_COMPLETED", default) != "true")
+            {
+                Log.Information("🎬 检测到VIDEO_EXTEND任务upscale完成(User消息)，准备自动提交extend: TaskId={TaskId}, Action={Action}, ButtonsCount={Count}", 
+                    task.Id, task.Action, task.Buttons?.Count ?? 0);
+                
+                // 标记已处理，防止重复处理
+                task.SetProperty("EXTEND_UPSCALE_COMPLETED", "true");
+                
+                // 重置状态和进度（从SUCCESS改回SUBMITTED）
+                task.Status = TaskStatus.SUBMITTED;
+                task.Progress = "50%";
+                task.Description = "Upscale完成，正在进行extend操作...";
+                
+                // 保存状态变更
+                DbHelper.Instance.TaskStore.Update(task);
+                
+                AutoSubmitVideoExtend(instance, task);
+            }
+        }
+        
+        /// <summary>
+        /// 自动提交VIDEO_EXTEND的extend操作
+        /// </summary>
+        private void AutoSubmitVideoExtend(DiscordInstance instance, TaskInfo task)
+        {
+            Log.Information("🚀 AutoSubmitVideoExtend方法被调用: TaskId={TaskId}", task.Id);
+            
+            try
+            {
+                var extendPrompt = task.GetProperty<string>("EXTEND_PROMPT", default);
+                var extendMotion = task.GetProperty<string>("EXTEND_MOTION", default);
+                
+                Log.Information("📋 Extend参数: Prompt={Prompt}, Motion={Motion}, ButtonsCount={Count}", 
+                    extendPrompt, extendMotion, task.Buttons?.Count ?? 0);
+                
+                // 从Buttons中查找正确的extend customId，而不是自己构建
+                // 因为upscale后的JobId可能不是正确的hash值
+                var extendButton = task.Buttons?.FirstOrDefault(x => 
+                    x.CustomId?.Contains($"animate_{extendMotion}_extend") == true);
+                
+                if (extendButton == null || string.IsNullOrWhiteSpace(extendButton.CustomId))
+                {
+                    Log.Warning("❌ VIDEO_EXTEND任务找不到extend按钮: {TaskId}, Motion: {Motion}, Buttons: {@Buttons}", 
+                        task.Id, extendMotion, task.Buttons);
+                    task.Status = TaskStatus.FAILURE;
+                    task.FailReason = $"找不到extend按钮 (motion: {extendMotion})";
+                    DbHelper.Instance.TaskStore.Update(task);
+                    return;
+                }
+                
+                var customId = extendButton.CustomId;
+                
+                Log.Information("✅ 找到extend按钮，开始自动提交extend操作: {TaskId}, CustomId: {CustomId}, Prompt: {Prompt}", 
+                    task.Id, customId, extendPrompt);
+                
+                // 更新任务状态和进度
+                task.Status = TaskStatus.SUBMITTED;
+                task.Progress = "50%";
+                task.Description = $"Upscale完成，正在进行extend操作...";
+                task.PromptEn = extendPrompt;  // 设置extend的prompt
+                
+                // 存储extend相关信息
+                task.SetProperty(Constants.TASK_PROPERTY_CUSTOM_ID, customId);
+                task.SetProperty(Constants.TASK_PROPERTY_REMIX_MODAL, "MJ::AnimateModal::prompt");
+                task.SetProperty(Constants.TASK_PROPERTY_REMIX_CUSTOM_ID, customId);
+                task.SetProperty("EXTEND_UPSCALE_COMPLETED", "true");
+                task.RemixAutoSubmit = true;  // 标记为自动提交
+                task.RemixModaling = false;   // 初始化modal状态
+                
+                // 保存任务状态
+                DbHelper.Instance.TaskStore.Update(task);
+                
+                // 异步提交extend操作
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        // 等待一小段时间确保消息已完全处理
+                        await Task.Delay(2000);
+                        
+                        // 获取消息flags
+                        var messageFlags = task.GetProperty<string>(Constants.TASK_PROPERTY_FLAGS, default)?.ToInt() ?? 0;
+                        var nonce = SnowFlake.NextId();
+                        
+                        // 更新任务的nonce，用于后续消息匹配
+                        task.Nonce = nonce;
+                        task.SetProperty(Constants.TASK_PROPERTY_NONCE, nonce);
+                        
+                        Log.Information("📤 步骤1: 提交extend action");
+                        Log.Information("  TaskId={TaskId}", task.Id);
+                        Log.Information("  MessageId={MessageId}", task.MessageId);
+                        Log.Information("  CustomId={CustomId}", customId);
+                        Log.Information("  MessageFlags={Flags}", messageFlags);
+                        Log.Information("  Nonce={Nonce}", nonce);
+                        
+                        // 步骤1: 提交action，触发modal弹窗
+                        task.RemixModaling = true;
+                        DbHelper.Instance.TaskStore.Update(task);
+                        
+                        var actionResult = await instance.ActionAsync(task.MessageId, customId, messageFlags, nonce, task);
+                        
+                        Log.Information("📥 步骤1响应: Code={Code}, Description={Description}", 
+                            actionResult.Code, actionResult.Description);
+                        
+                        if (actionResult.Code != ReturnCode.SUCCESS)
+                        {
+                            Log.Warning("VIDEO_EXTEND的extend action提交失败: {TaskId}, Error: {Error}", task.Id, actionResult.Description);
+                            task.Status = TaskStatus.FAILURE;
+                            task.FailReason = $"Extend action提交失败: {actionResult.Description}";
+                            DbHelper.Instance.TaskStore.Update(task);
+                            return;
+                        }
+                        
+                        // 检查账号是否开启了Remix模式
+                        var account = instance.Account;
+                        var isRemixOn = (task.RealBotType ?? task.BotType) == EBotType.MID_JOURNEY ? account.MjRemixOn : account.NijiRemixOn;
+                        
+                        if (!isRemixOn)
+                        {
+                            // Remix未开启，extend操作会直接执行，不需要提交modal
+                            Log.Information("✅ Remix未开启，extend操作已直接开始执行: {TaskId}", task.Id);
+                            task.Description = "Extend操作已开始执行...";
+                            task.Progress = "60%";
+                            task.RemixModaling = false;
+                            DbHelper.Instance.TaskStore.Update(task);
+                            
+                            // 任务会通过正常的进度更新机制继续跟踪
+                            return;
+                        }
+                        
+                        Log.Information("Extend action提交成功，Remix已开启，等待modal消息: {TaskId}", task.Id);
+                        
+                        // 步骤2: 等待获取modal的messageId和interactionMetadataId
+                        var sw = new Stopwatch();
+                        sw.Start();
+                        while (string.IsNullOrWhiteSpace(task.RemixModalMessageId) || string.IsNullOrWhiteSpace(task.InteractionMetadataId))
+                        {
+                            if (sw.ElapsedMilliseconds > 60000) // 60秒超时
+                            {
+                                Log.Warning("等待modal消息超时: {TaskId}", task.Id);
+                                task.Status = TaskStatus.FAILURE;
+                                task.FailReason = "等待modal消息超时";
+                                DbHelper.Instance.TaskStore.Update(task);
+                                return;
+                            }
+                            
+                            await Task.Delay(1000);
+                            task = DbHelper.Instance.TaskStore.Get(task.Id);  // 重新加载任务状态
+                        }
+                        
+                        Log.Information("收到modal消息: TaskId={TaskId}, RemixModalMessageId={RemixModalMessageId}", 
+                            task.Id, task.RemixModalMessageId);
+                        
+                        // 步骤3: 等待一小段时间后提交remix modal
+                        await Task.Delay(1500);
+                        task.RemixModaling = false;
+                        DbHelper.Instance.TaskStore.Update(task);
+                        
+                        // 转换customId格式用于modal提交
+                        // MJ::JOB::animate_high_extend::1::b8803f08-fc00-43e6-97a8-bade18e41231::SOLO 
+                        // -> MJ::AnimateModal::b8803f08-fc00-43e6-97a8-bade18e41231::1::high::1
+                        var parts = customId.Split("::");
+                        var animateType = parts[2].Replace("animate_", "").Replace("_extend", "");
+                        var hash = parts[4];  // 使用customId中的hash，而不是task.JobId
+                        var convertedCustomId = $"MJ::AnimateModal::{hash}::{parts[3]}::{animateType}::1";  // 最后的1表示extend
+                        
+                        task.SetProperty(Constants.TASK_PROPERTY_REMIX_CUSTOM_ID, convertedCustomId);
+                        DbHelper.Instance.TaskStore.Update(task);
+                        
+                        var modalNonce = SnowFlake.NextId();
+                        task.Nonce = modalNonce;
+                        task.SetProperty(Constants.TASK_PROPERTY_NONCE, modalNonce);
+                        
+                        Log.Information("📤 步骤2: 提交remix modal");
+                        Log.Information("  TaskId={TaskId}", task.Id);
+                        Log.Information("  Action=VIDEO_EXTEND");
+                        Log.Information("  RemixModalMessageId={RemixModalMessageId}", task.RemixModalMessageId);
+                        Log.Information("  Modal=MJ::AnimateModal::prompt");
+                        Log.Information("  ConvertedCustomId={CustomId}", convertedCustomId);
+                        Log.Information("  Prompt={Prompt}", extendPrompt);
+                        Log.Information("  ModalNonce={Nonce}", modalNonce);
+                        Log.Information("  BotType={BotType}", task.RealBotType ?? task.BotType);
+                        
+                        var remixResult = await instance.RemixAsync(task, TaskAction.VIDEO_EXTEND, task.RemixModalMessageId, 
+                            "MJ::AnimateModal::prompt", convertedCustomId, extendPrompt, modalNonce, task.RealBotType ?? task.BotType);
+                        
+                        Log.Information("📥 步骤2响应: Code={Code}, Description={Description}", 
+                            remixResult.Code, remixResult.Description);
+                        
+                        if (remixResult.Code == ReturnCode.SUCCESS || remixResult.Code == ReturnCode.IN_QUEUE)
+                        {
+                            Log.Information("VIDEO_EXTEND的extend操作完整提交成功: {TaskId}", task.Id);
+                            task.Description = "Extend操作已提交，等待MJ处理...";
+                            task.Progress = "60%";
+                        }
+                        else
+                        {
+                            Log.Warning("VIDEO_EXTEND的remix modal提交失败: {TaskId}, Error: {Error}", task.Id, remixResult.Description);
+                            task.Status = TaskStatus.FAILURE;
+                            task.FailReason = $"Extend modal提交失败: {remixResult.Description}";
+                        }
+                        
+                        DbHelper.Instance.TaskStore.Update(task);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "VIDEO_EXTEND自动提交extend操作时发生异常: {TaskId}", task.Id);
+                        task.Status = TaskStatus.FAILURE;
+                        task.FailReason = $"Extend操作提交异常: {ex.Message}";
+                        DbHelper.Instance.TaskStore.Update(task);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "准备VIDEO_EXTEND自动提交时发生异常: {TaskId}", task.Id);
+            }
         }
 
         public static ContentParseData GetParseData(string content)

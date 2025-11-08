@@ -383,6 +383,8 @@ namespace Midjourney.Infrastructure.Models
         /// </summary>
         public void Success()
         {
+            Log.Information("🔔 Success()方法被调用: TaskId={TaskId}, Action={Action}, Status={Status}", Id, Action, Status);
+            
             try
             {
                 // 保存图片
@@ -472,32 +474,6 @@ namespace Midjourney.Infrastructure.Models
                         Url = videoUrl
                     });
                 }
-            }
-
-            // 处理VIDEO_EXTEND任务的后续操作
-            if (Action == TaskAction.VIDEO_EXTEND && !string.IsNullOrWhiteSpace(GetProperty<string>("EXTEND_PROMPT", default)))
-            {
-                // 这是一个upscale完成后需要进行extend操作的任务
-                var extendPrompt = GetProperty<string>("EXTEND_PROMPT", default);
-                var extendMotion = GetProperty<string>("EXTEND_MOTION", default);
-                var sourceTaskId = GetProperty<string>("EXTEND_SOURCE_TASK_ID", default);
-                
-                // 构建extend操作的custom_id（类似TaskService中已有的逻辑）
-                var customId = $"MJ::JOB::animate_{extendMotion ?? "low"}_extend::1::{JobId}::SOLO";
-                
-                // 设置任务进入modal状态，等待用户操作或自动处理
-                Status = TaskStatus.MODAL;
-                
-                // 存储extend相关信息，用于后续的modal操作
-                SetProperty(Constants.TASK_PROPERTY_CUSTOM_ID, customId);
-                SetProperty(Constants.TASK_PROPERTY_REMIX_MODAL, "MJ::AnimateModal::prompt");
-                SetProperty(Constants.TASK_PROPERTY_REMIX_CUSTOM_ID, customId);
-                
-                // 模拟remix模式的处理流程
-                RemixModalMessageId = MessageId;
-                InteractionMetadataId = MessageId;
-                
-                Log.Information("VIDEO_EXTEND任务upscale完成，准备进行extend操作: {TaskId}, CustomId: {CustomId}", Id, customId);
             }
 
             UpdateUserDrawCount();
