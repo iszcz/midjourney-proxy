@@ -61,15 +61,19 @@ namespace Midjourney.Infrastructure.Handle
             var parseData = ConvertUtils.ParseContent(content);
 
 
-            if (messageType == MessageType.CREATE && !string.IsNullOrWhiteSpace(msgId))
+            // 放宽进入条件：CREATE 即使缺少 msgId，但有 InteractionMetadata.Id 也尝试强键绑定
+            if (messageType == MessageType.CREATE && (!string.IsNullOrWhiteSpace(msgId) || !string.IsNullOrWhiteSpace(message.InteractionMetadata?.Id)))
             {
                 var fullPrompt = GetFullPrompt(message);
 
                 // 任务开始
-                var task = instance.GetRunningTaskByMessageId(msgId);
-                if (task == null && !string.IsNullOrWhiteSpace(message.InteractionMetadata?.Id))
+                TaskInfo task = null;
+                // 优先用 InteractionMetadataId 命中（更稳定）
+                if (!string.IsNullOrWhiteSpace(message.InteractionMetadata?.Id))
                 {
-                    task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && c.InteractionMetadataId == message.InteractionMetadata.Id).FirstOrDefault();
+                    task = instance.FindRunningTask(c =>
+                        (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED)
+                        && c.InteractionMetadataId == message.InteractionMetadata.Id).FirstOrDefault();
 
                     // 如果通过 meta id 找到任务，但是 full prompt 为空，则更新 full prompt
                     if (task != null && string.IsNullOrWhiteSpace(task.PromptFull))
@@ -77,25 +81,28 @@ namespace Midjourney.Infrastructure.Handle
                         task.PromptFull = fullPrompt;
                     }
                 }
+                // 其次再尝试用 MessageId 命中（当 msgId 存在时）
+                if (task == null && !string.IsNullOrWhiteSpace(msgId))
+                {
+                    task = instance.GetRunningTaskByMessageId(msgId);
+                }
 
                 var botType = GetBotType(message);
-                if (task == null)
-                {
-                    if (!string.IsNullOrWhiteSpace(fullPrompt))
-                    {
-                        task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && (c.BotType == botType || c.RealBotType == botType) && c.PromptFull == fullPrompt)
-                        .OrderBy(c => c.StartTime).FirstOrDefault();
-                    }
-                }
+                // 移除基于 PromptFull 的模糊回退匹配，避免并发串单
+                // 只允许通过强键（MessageId / InteractionMetadataId）命中任务
 
                 if (task == null || task.Status == TaskStatus.SUCCESS || task.Status == TaskStatus.FAILURE)
                 {
+                    if (task == null)
+                    {
+                        Log.Debug("Start: 未通过强键命中任务，忽略。msgId={MsgId}, metaId={MetaId}", msgId, message.InteractionMetadata?.Id);
+                    }
                     return;
                 }
 
                 //task.MessageId = msgId;
 
-                if (!task.MessageIds.Contains(msgId))
+                if (!string.IsNullOrWhiteSpace(msgId) && !task.MessageIds.Contains(msgId))
                     task.MessageIds.Add(msgId);
 
                 task.SetProperty(Constants.MJ_MESSAGE_HANDLED, true);
@@ -117,10 +124,13 @@ namespace Midjourney.Infrastructure.Handle
 
                 var fullPrompt = GetFullPrompt(message);
 
-                var task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && c.MessageId == msgId).FirstOrDefault();
-                if (task == null && !string.IsNullOrWhiteSpace(message.InteractionMetadata?.Id))
+                // 先用 InteractionMetadataId 命中，再退到 MessageId
+                TaskInfo task = null;
+                if (!string.IsNullOrWhiteSpace(message.InteractionMetadata?.Id))
                 {
-                    task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && c.InteractionMetadataId == message.InteractionMetadata.Id).FirstOrDefault();
+                    task = instance.FindRunningTask(c =>
+                        (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED)
+                        && c.InteractionMetadataId == message.InteractionMetadata.Id).FirstOrDefault();
 
                     // 如果通过 meta id 找到任务，但是 full prompt 为空，则更新 full prompt
                     if (task != null && string.IsNullOrWhiteSpace(task.PromptFull))
@@ -128,25 +138,29 @@ namespace Midjourney.Infrastructure.Handle
                         task.PromptFull = fullPrompt;
                     }
                 }
-
-                var botType = GetBotType(message);
                 if (task == null)
                 {
-                    if (!string.IsNullOrWhiteSpace(fullPrompt))
-                    {
-                        task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && (c.BotType == botType || c.RealBotType == botType) && c.PromptFull == fullPrompt)
-                        .OrderBy(c => c.StartTime).FirstOrDefault();
-                    }
+                    task = instance.FindRunningTask(c =>
+                        (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED)
+                        && c.MessageId == msgId).FirstOrDefault();
                 }
+
+                var botType = GetBotType(message);
+                // 移除基于 PromptFull 的模糊回退匹配，避免并发串单
+                // 只允许通过强键（MessageId / InteractionMetadataId）命中任务
 
                 if (task == null || task.Status == TaskStatus.SUCCESS || task.Status == TaskStatus.FAILURE)
                 {
+                    if (task == null)
+                    {
+                        Log.Debug("Progress: 未通过强键命中任务，忽略。msgId={MsgId}, metaId={MetaId}", msgId, message.InteractionMetadata?.Id);
+                    }
                     return;
                 }
 
                 //task.MessageId = msgId;
 
-                if (!task.MessageIds.Contains(msgId))
+                if (!string.IsNullOrWhiteSpace(msgId) && !task.MessageIds.Contains(msgId))
                     task.MessageIds.Add(msgId);
 
                 task.SetProperty(Constants.MJ_MESSAGE_HANDLED, true);

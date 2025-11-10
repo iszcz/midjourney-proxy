@@ -80,6 +80,18 @@ namespace Midjourney.Infrastructure.LoadBalancer
         private readonly IMemoryCache _cache;
         private readonly ITaskService _taskService;
 
+        // SUBMITTED 提前失败阈值（秒）。默认 120 秒；通过环境变量 DISCORD_SUBMITTED_EARLY_FAIL_SECONDS 配置；设置为 0 可禁用。
+        private static readonly int SubmittedEarlyFailSeconds = InitSubmittedEarlyFailSeconds();
+        private static int InitSubmittedEarlyFailSeconds()
+        {
+            var env = Environment.GetEnvironmentVariable("DISCORD_SUBMITTED_EARLY_FAIL_SECONDS");
+            if (!string.IsNullOrWhiteSpace(env) && int.TryParse(env, out var seconds) && seconds >= 0)
+            {
+                return seconds;
+            }
+            return 120;
+        }
+
         /// <summary>
         /// 任务队列
         /// </summary>
@@ -754,6 +766,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 var sw = new Stopwatch();
                 sw.Start();
                 var lastLogTime = 0L;
+                var submittedEarlyFailMs = SubmittedEarlyFailSeconds > 0 ? SubmittedEarlyFailSeconds * 1000 : 0;
 
                 while (info.Status == TaskStatus.SUBMITTED || info.Status == TaskStatus.IN_PROGRESS)
                 {
@@ -768,6 +781,19 @@ namespace Midjourney.Infrastructure.LoadBalancer
                         lastLogTime = sw.ElapsedMilliseconds;
                         _logger.Information("⏳ 任务执行中 {TaskId}, 状态: {Status}, 进度: {Progress}, 已执行: {Elapsed}秒, 超时设置: {Timeout}分钟", 
                             info.Id, info.Status, info.Progress, sw.ElapsedMilliseconds / 1000, timeoutMin);
+                    }
+
+
+                    // ⏱️ SUBMITTED 无进展提前失败（仅在启用时，默认 120 秒）
+                    if (submittedEarlyFailMs > 0 
+                        && info.Status == TaskStatus.SUBMITTED 
+                        && sw.ElapsedMilliseconds > submittedEarlyFailMs)
+                    {
+                        _logger.Warning("⏳ SUBMITTED 提前超时 {TaskId}, 已等待: {Elapsed}s, 阈值: {Threshold}s。判定为消息链路异常或被CF/429阻断，提前失败释放信号量。", 
+                            info.Id, sw.ElapsedMilliseconds / 1000, SubmittedEarlyFailSeconds);
+                        info.Fail($"提交后 {SubmittedEarlyFailSeconds} 秒未收到 Discord 响应，已提前失败，请重试");
+                        SaveAndNotify(info);
+                        return;
                     }
 
                     if (sw.ElapsedMilliseconds > timeoutMin * 60 * 1000)
