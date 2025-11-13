@@ -1404,30 +1404,59 @@ namespace Midjourney.API.Controllers
                 return Result.Fail("演示模式，禁止操作");
             }
 
-            var queueTask = _loadBalancer.GetQueueTasks().FirstOrDefault(t => t.Id == id);
-            if (queueTask != null)
-            {
-                queueTask.Fail("删除任务");
-
-                Thread.Sleep(1000);
-            }
-
+            // 🔧 修复：使用 CancelTask 方法正确释放队列资源和信号量
             var task = DbHelper.Instance.TaskStore.Get(id);
             if (task != null)
             {
                 var ins = _loadBalancer.GetDiscordInstance(task.InstanceId);
                 if (ins != null)
                 {
-                    var model = ins.FindRunningTask(c => c.Id == id).FirstOrDefault();
-                    if (model != null)
+                    // 使用 CancelTask 方法取消任务，这会：
+                    // 1. 从队列中移除任务（如果还在队列中）
+                    // 2. 释放信号量（如果任务已经获取了信号量）
+                    // 3. 从运行任务列表中移除
+                    // 4. 标记任务为失败
+                    var cancelled = ins.CancelTask(id, "删除任务");
+                    if (cancelled)
                     {
-                        model.Fail("删除任务");
-
-                        Thread.Sleep(1000);
+                        // 等待一下，确保资源释放完成
+                        Thread.Sleep(500);
+                    }
+                }
+                else
+                {
+                    // 如果找不到实例，尝试从全局队列中查找并取消
+                    var queueTask = _loadBalancer.GetQueueTasks().FirstOrDefault(t => t.Id == id);
+                    if (queueTask != null)
+                    {
+                        // 尝试找到对应的实例
+                        var allInstances = _loadBalancer.GetAllInstances();
+                        foreach (var instance in allInstances)
+                        {
+                            if (instance.CancelTask(id, "删除任务"))
+                            {
+                                Thread.Sleep(500);
+                                break;
+                            }
+                        }
                     }
                 }
 
+                // 从数据库中删除任务
                 DbHelper.Instance.TaskStore.Delete(id);
+            }
+            else
+            {
+                // 任务不在数据库中，但可能还在队列中，尝试取消
+                var allInstances = _loadBalancer.GetAllInstances();
+                foreach (var instance in allInstances)
+                {
+                    if (instance.CancelTask(id, "删除任务"))
+                    {
+                        Thread.Sleep(500);
+                        break;
+                    }
+                }
             }
 
             return Result.Ok();

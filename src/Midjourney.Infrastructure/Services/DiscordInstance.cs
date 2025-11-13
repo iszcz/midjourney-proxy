@@ -610,6 +610,114 @@ namespace Midjourney.Infrastructure.LoadBalancer
         }
 
         /// <summary>
+        /// 取消任务并释放所有相关资源（队列位置、信号量等）。
+        /// 用于删除任务时正确释放资源，避免队列阻塞。
+        /// </summary>
+        /// <param name="taskId">任务ID</param>
+        /// <param name="reason">取消原因</param>
+        /// <returns>是否成功取消（任务存在且被取消）</returns>
+        public bool CancelTask(string taskId, string reason = "删除任务")
+        {
+            var task = GetRunningTask(taskId);
+            if (task == null)
+            {
+                // 任务不在运行中，检查是否在队列中
+                // 使用 ExitTask 中的逻辑来查找任务
+                TaskInfo queueTask = null;
+                
+                // 检查优先队列
+                if (_priorityQueueTasks.Any(c => c.Item1.Id == taskId))
+                {
+                    foreach (var item in _priorityQueueTasks)
+                    {
+                        if (item.Item1.Id == taskId)
+                        {
+                            queueTask = item.Item1;
+                            break;
+                        }
+                    }
+                }
+                
+                // 检查普通队列
+                if (queueTask == null && _queueTasks.Any(c => c.Item1.Id == taskId))
+                {
+                    foreach (var item in _queueTasks)
+                    {
+                        if (item.Item1.Id == taskId)
+                        {
+                            queueTask = item.Item1;
+                            break;
+                        }
+                    }
+                }
+                
+                if (queueTask != null)
+                {
+                    // 任务在队列中，从队列中移除
+                    task = queueTask;
+                    ExitTask(task);
+                    task.Fail(reason);
+                    SaveAndNotify(task);
+                    _logger.Information("[{@0}] 已从队列中取消任务 {@1}, 原因: {@2}", Account.GetDisplay(), taskId, reason);
+                    return true;
+                }
+                
+                // 任务不存在
+                return false;
+            }
+
+            // 任务正在运行中，需要释放信号量
+            _logger.Information("[{@0}] 开始取消运行中的任务 {@1}, 原因: {@2}", Account.GetDisplay(), taskId, reason);
+            
+            // 🔧 关键修复：如果任务已经获取了信号量，需要释放信号量
+            // 任务在 _runningTasks 中，说明已经获取了信号量（在 ExecuteTaskAsync 中获取）
+            // 检查任务状态来判断是否已经获取了信号量
+            // 如果任务状态是 SUBMITTED 或 IN_PROGRESS，说明已经获取了信号量
+            bool shouldReleaseSemaphore = task.Status == TaskStatus.SUBMITTED || task.Status == TaskStatus.IN_PROGRESS;
+            
+            // 标记任务为失败
+            task.Fail(reason);
+            
+            // 从运行任务列表中移除
+            _runningTasks.TryRemove(taskId, out _);
+            
+            // 从任务Future映射中移除（这会取消正在执行的异步任务）
+            if (_taskFutureMap.TryRemove(taskId, out var futureTask))
+            {
+                // 注意：不等待任务完成，只是标记为已取消
+                _logger.Debug("[{@0}] 已从任务Future映射中移除任务 {@1}", Account.GetDisplay(), taskId);
+            }
+            
+            // 释放信号量（如果已获取）
+            if (shouldReleaseSemaphore)
+            {
+                try
+                {
+                    _semaphoreSlimLock.Unlock();
+                    _logger.Information("[{@0}] 已释放信号量，任务 {@1} 已取消, 剩余运行任务数: {@2}, 可用信号量: {@3}", 
+                        Account.GetDisplay(), taskId, _runningTasks.Count, _semaphoreSlimLock.AvailableCount);
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex, "[{@0}] 释放信号量时异常！任务: {@1}", Account.GetDisplay(), taskId);
+                }
+            }
+            else
+            {
+                _logger.Debug("[{@0}] 任务 {@1} 未获取信号量，无需释放", Account.GetDisplay(), taskId);
+            }
+            
+            // 从队列中移除（如果还在队列中）
+            ExitTask(task);
+            
+            // 保存并通知
+            SaveAndNotify(task);
+            
+            _logger.Information("[{@0}] 任务 {@1} 已成功取消并释放所有资源", Account.GetDisplay(), taskId);
+            return true;
+        }
+
+        /// <summary>
         /// 获取正在运行的任务Future映射。
         /// </summary>
         /// <returns>任务Future映射</returns>
