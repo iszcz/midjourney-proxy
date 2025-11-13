@@ -23,6 +23,7 @@
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using FreeSql.DataAnnotations;
 using Microsoft.Extensions.Caching.Memory;
 using Midjourney.Infrastructure.Data;
@@ -426,6 +427,7 @@ namespace Midjourney.Infrastructure.Models
 
             // 为IMAGINE类型任务或包含upsample按钮的任务生成图片URL数组
             bool shouldGenerateImageUrls = false;
+            int batchSize = GetBatchSize();
             
             // 检查是否为IMAGINE类型任务
             if (Action == TaskAction.IMAGINE && !string.IsNullOrWhiteSpace(JobId))
@@ -441,7 +443,7 @@ namespace Midjourney.Infrastructure.Models
             if (shouldGenerateImageUrls)
             {
                 ImageUrls = new List<ImgUrlInfo>();
-                for (int i = 0; i < 4; i++)
+                for (int i = 0; i < batchSize; i++)
                 {
                     ImageUrls.Add(new ImgUrlInfo
                     {
@@ -459,7 +461,7 @@ namespace Midjourney.Infrastructure.Models
                 VideoUrls = new List<VideoUrlInfo>();
                 ImageUrls = new List<ImgUrlInfo>(); // 同时同步到imageUrls
                 
-                for (int i = 0; i < 4; i++)
+                for (int i = 0; i < batchSize; i++)
                 {
                     var videoUrl = $"https://cdn.midjourney.com/video/{JobId}/0_{i}.mp4";
                     
@@ -477,6 +479,30 @@ namespace Midjourney.Infrastructure.Models
             }
 
             UpdateUserDrawCount();
+        }
+
+        private int GetBatchSize()
+        {
+            string promptSource = PromptFull;
+
+            if (string.IsNullOrWhiteSpace(promptSource))
+            {
+                promptSource = !string.IsNullOrWhiteSpace(PromptEn) ? PromptEn : Prompt;
+            }
+
+            if (!string.IsNullOrWhiteSpace(promptSource))
+            {
+                var match = Regex.Match(promptSource, @"--bs\s+(\d+)", RegexOptions.IgnoreCase);
+                if (match.Success && int.TryParse(match.Groups[1].Value, out var batchSize))
+                {
+                    if (batchSize >= 1 && batchSize <= 4)
+                    {
+                        return batchSize;
+                    }
+                }
+            }
+
+            return 4;
         }
 
         /// <summary>
