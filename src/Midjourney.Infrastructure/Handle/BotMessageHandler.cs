@@ -132,66 +132,119 @@ namespace Midjourney.Infrastructure.Handle
 
             var botType = GetBotType(message);
 
-            // 优先级3: 通过PromptFull匹配
+            // 优先级3: 通过PromptFull匹配（智能匹配策略：减少串任务风险）
             if (task == null)
             {
                 if (!string.IsNullOrWhiteSpace(fullPrompt))
                 {
-                    task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && (c.BotType == botType || c.RealBotType == botType) && c.PromptFull == fullPrompt)
-                    .OrderBy(c => c.StartTime).FirstOrDefault();
+                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var timeWindow = 10 * 60 * 1000; // 10分钟时间窗口
+                    var minSubmitTime = now - timeWindow;
+
+                    // 智能匹配策略：优先匹配 SUBMITTED 状态 + 时间窗口内的任务
+                    var candidateTasks = instance
+                        .FindRunningTask(c => 
+                            (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) 
+                            && (c.BotType == botType || c.RealBotType == botType) 
+                            && c.PromptFull == fullPrompt
+                            && c.SubmitTime.HasValue 
+                            && c.SubmitTime.Value >= minSubmitTime) // 只匹配最近10分钟内的任务
+                        .OrderByDescending(c => c.Status == TaskStatus.SUBMITTED ? 1 : 0) // 优先 SUBMITTED 状态
+                        .ThenByDescending(c => c.SubmitTime ?? 0) // 然后按提交时间降序（最近提交的优先）
+                        .ToList();
+                    
+                    if (candidateTasks.Count > 0)
+                    {
+                        task = candidateTasks.First();
+                        if (candidateTasks.Count > 1)
+                        {
+                            Log.Warning("BOT PromptFull匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, 选择最近提交的任务: {TaskId} (SubmitTime: {SubmitTime})", 
+                                candidateTasks.Count, msgId, task.Id, task.SubmitTime?.ToDateTimeString() ?? "N/A");
+                        }
+                    }
                 }
             }
 
-            // 优先级4: 通过FormatPrompt匹配（仅精确匹配，避免误匹配）
+            // 优先级4: 通过FormatPrompt匹配（智能匹配策略：减少串任务风险）
             if (task == null)
             {
                 var prompt = finalPrompt.FormatPrompt();
 
                 if (!string.IsNullOrWhiteSpace(prompt))
                 {
+                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var timeWindow = 10 * 60 * 1000; // 10分钟时间窗口
+                    var minSubmitTime = now - timeWindow;
+
                     var candidateTasks = instance
                         .FindRunningTask(c =>
                         (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED)
                         && (c.BotType == botType || c.RealBotType == botType)
                         && !string.IsNullOrWhiteSpace(c.PromptEn)
-                        && c.PromptEn.FormatPrompt() == prompt)  // ✅ 仅精确匹配，移除危险的EndsWith/StartsWith
-                        .OrderBy(c => c.StartTime)
+                        && c.SubmitTime.HasValue 
+                        && c.SubmitTime.Value >= minSubmitTime // 只匹配最近10分钟内的任务
+                        && (c.PromptEn.FormatPrompt() == prompt || c.PromptEn.FormatPrompt().EndsWith(prompt) || prompt.StartsWith(c.PromptEn.FormatPrompt())))
+                        .OrderByDescending(c => c.Status == TaskStatus.SUBMITTED ? 1 : 0) // 优先 SUBMITTED 状态
+                        .ThenByDescending(c => c.SubmitTime ?? 0) // 然后按提交时间降序（最近提交的优先）
                         .ToList();
                     
-                    // 如果有多个相同prompt的任务，只取第一个（最早的）
                     if (candidateTasks.Count > 0)
                     {
                         task = candidateTasks.First();
                         if (candidateTasks.Count > 1)
                         {
-                            Log.Warning("BOT FormatPrompt匹配发现多个相同提示词的任务, Count: {Count}, TaskId: {TaskId}, Prompt: {Prompt}", 
-                                candidateTasks.Count, task.Id, prompt.Substring(0, Math.Min(50, prompt.Length)));
+                            Log.Warning("BOT FormatPrompt匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 选择最近提交的任务: {TaskId} (SubmitTime: {SubmitTime})", 
+                                candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)), task.Id, task.SubmitTime?.ToDateTimeString() ?? "N/A");
                         }
                     }
                 }
+                else
+                {
+                    // 如果最终提示词为空，则可能是重绘、混图等任务（智能匹配策略）
+                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var timeWindow = 10 * 60 * 1000; // 10分钟时间窗口
+                    var minSubmitTime = now - timeWindow;
+
+                    task = instance
+                        .FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
+                        (c.BotType == botType || c.RealBotType == botType) 
+                        && c.Action == action
+                        && c.SubmitTime.HasValue 
+                        && c.SubmitTime.Value >= minSubmitTime) // 只匹配最近10分钟内的任务
+                        .OrderByDescending(c => c.Status == TaskStatus.SUBMITTED ? 1 : 0) // 优先 SUBMITTED 状态
+                        .ThenByDescending(c => c.SubmitTime ?? 0) // 然后按提交时间降序
+                        .FirstOrDefault();
+                }
             }
 
-            // 优先级5: 通过FormatPromptParam匹配（仅精确匹配，避免误匹配）
+            // 优先级5: 通过FormatPromptParam匹配（智能匹配策略：减少串任务风险）
             if (task == null)
             {
                 var prompt = finalPrompt.FormatPromptParam();
                 if (!string.IsNullOrWhiteSpace(prompt))
                 {
+                    var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                    var timeWindow = 10 * 60 * 1000; // 10分钟时间窗口
+                    var minSubmitTime = now - timeWindow;
+
                     var candidateTasks = instance
                             .FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
-                            (c.BotType == botType || c.RealBotType == botType) && !string.IsNullOrWhiteSpace(c.PromptEn)
-                            && c.PromptEn.FormatPromptParam() == prompt)  // ✅ 仅精确匹配，移除危险的EndsWith/StartsWith
-                            .OrderBy(c => c.StartTime)
+                            (c.BotType == botType || c.RealBotType == botType) 
+                            && !string.IsNullOrWhiteSpace(c.PromptEn)
+                            && c.SubmitTime.HasValue 
+                            && c.SubmitTime.Value >= minSubmitTime // 只匹配最近10分钟内的任务
+                            && (c.PromptEn.FormatPromptParam() == prompt || c.PromptEn.FormatPromptParam().EndsWith(prompt) || prompt.StartsWith(c.PromptEn.FormatPromptParam())))
+                            .OrderByDescending(c => c.Status == TaskStatus.SUBMITTED ? 1 : 0) // 优先 SUBMITTED 状态
+                            .ThenByDescending(c => c.SubmitTime ?? 0) // 然后按提交时间降序（最近提交的优先）
                             .ToList();
                     
-                    // 如果有多个相同prompt的任务，只取第一个（最早的）
                     if (candidateTasks.Count > 0)
                     {
                         task = candidateTasks.First();
                         if (candidateTasks.Count > 1)
                         {
-                            Log.Warning("BOT FormatPromptParam匹配发现多个相同提示词的任务, Count: {Count}, TaskId: {TaskId}, Prompt: {Prompt}", 
-                                candidateTasks.Count, task.Id, prompt.Substring(0, Math.Min(50, prompt.Length)));
+                            Log.Warning("BOT FormatPromptParam匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 选择最近提交的任务: {TaskId} (SubmitTime: {SubmitTime})", 
+                                candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)), task.Id, task.SubmitTime?.ToDateTimeString() ?? "N/A");
                         }
                     }
                 }
@@ -234,11 +287,11 @@ namespace Midjourney.Infrastructure.Handle
                             .OrderBy(c => c.StartTime).FirstOrDefault();
                     }
 
-                    // 最后才使用原有的模糊匹配，但增加时间窗口限制和唯一性保证
+                    // 最后才使用原有的模糊匹配，但严格验证prompt匹配，避免串任务
                     if (task == null)
                     {
-                        // 缩短时间窗口到2分钟，减少误匹配概率
-                        var cutoffTime = DateTimeOffset.Now.AddMinutes(-2).ToUnixTimeMilliseconds();
+                        // 缩短时间窗口到1分钟，减少误匹配概率
+                        var cutoffTime = DateTimeOffset.Now.AddMinutes(-1).ToUnixTimeMilliseconds();
                         var candidateTasks = instance.FindRunningTask(c => 
                             (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
                             (c.BotType == botType || c.RealBotType == botType) && 
@@ -247,26 +300,58 @@ namespace Midjourney.Infrastructure.Handle
                             .OrderBy(c => c.StartTime)
                             .ToList();
                         
-                        // 如果只有一个候选任务，才认为匹配成功；如果有多个，说明无法准确区分，记录警告
-                        if (candidateTasks.Count == 1)
+                        // 严格验证：即使只有一个候选，也要验证prompt是否匹配
+                        if (candidateTasks.Count > 0)
                         {
-                            task = candidateTasks.First();
-                            Log.Warning("BOT 使用模糊匹配找到任务, TaskId: {TaskId}, Action: {Action}, 建议优化任务提交时的唯一标识", 
-                                task.Id, action);
-                        }
-                        else if (candidateTasks.Count > 1)
-                        {
-                            Log.Error("BOT 发现多个候选任务无法区分, Count: {Count}, Action: {Action}, MessageId: {MessageId}, 可能导致任务混淆！", 
-                                candidateTasks.Count, action, msgId);
-                            // 不匹配任何任务，避免错误匹配
-                            task = null;
+                            // 如果消息中有prompt，必须验证候选任务的prompt是否匹配
+                            if (!string.IsNullOrWhiteSpace(finalPrompt))
+                            {
+                                var matchedTask = candidateTasks.FirstOrDefault(c => 
+                                    !string.IsNullOrWhiteSpace(c.PromptEn) && 
+                                    (c.PromptEn == finalPrompt || 
+                                     c.PromptEn.FormatPrompt() == finalPrompt.FormatPrompt() ||
+                                     c.PromptEn.FormatPromptParam() == finalPrompt.FormatPromptParam()));
+                                
+                                if (matchedTask != null)
+                                {
+                                    task = matchedTask;
+                                    if (candidateTasks.Count > 1)
+                                    {
+                                        Log.Warning("BOT 使用模糊匹配找到任务（已验证prompt匹配）, TaskId: {TaskId}, Action: {Action}, CandidateCount: {Count}", 
+                                            task.Id, action, candidateTasks.Count);
+                                    }
+                                }
+                                else
+                                {
+                                    // Prompt不匹配，拒绝匹配，避免串任务
+                                    Log.Error("BOT 模糊匹配失败：候选任务的prompt与消息prompt不匹配, MessagePrompt: {MessagePrompt}, CandidateCount: {Count}, Action: {Action}, MessageId: {MessageId}, 拒绝匹配以避免串任务！", 
+                                        finalPrompt.Substring(0, Math.Min(50, finalPrompt.Length)), candidateTasks.Count, action, msgId);
+                                    task = null;
+                                }
+                            }
+                            else
+                            {
+                                // 如果消息中没有prompt，且只有一个候选任务，才匹配
+                                if (candidateTasks.Count == 1)
+                                {
+                                    task = candidateTasks.First();
+                                    Log.Warning("BOT 使用模糊匹配找到任务（无prompt验证）, TaskId: {TaskId}, Action: {Action}, 建议优化任务提交时的唯一标识", 
+                                        task.Id, action);
+                                }
+                                else if (candidateTasks.Count > 1)
+                                {
+                                    Log.Error("BOT 发现多个候选任务无法区分（无prompt验证）, Count: {Count}, Action: {Action}, MessageId: {MessageId}, 可能导致任务混淆！", 
+                                        candidateTasks.Count, action, msgId);
+                                    task = null;
+                                }
+                            }
                         }
                     }
                 }
                 else
                 {
-                    // 其他任务类型使用原有逻辑，但增加时间窗口限制和唯一性保证
-                    var cutoffTime = DateTimeOffset.Now.AddMinutes(-2).ToUnixTimeMilliseconds();
+                    // 其他任务类型使用严格验证的模糊匹配，避免串任务
+                    var cutoffTime = DateTimeOffset.Now.AddMinutes(-1).ToUnixTimeMilliseconds();
                     var candidateTasks = instance.FindRunningTask(c => 
                         (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
                         (c.BotType == botType || c.RealBotType == botType) && 
@@ -275,19 +360,51 @@ namespace Midjourney.Infrastructure.Handle
                         .OrderBy(c => c.StartTime)
                         .ToList();
                     
-                    // 如果只有一个候选任务，才认为匹配成功；如果有多个，说明无法准确区分，记录警告
-                    if (candidateTasks.Count == 1)
+                    // 严格验证：即使只有一个候选，也要验证prompt是否匹配
+                    if (candidateTasks.Count > 0)
                     {
-                        task = candidateTasks.First();
-                        Log.Warning("BOT 使用模糊匹配找到任务, TaskId: {TaskId}, Action: {Action}, 建议优化任务提交时的唯一标识", 
-                            task.Id, action);
-                    }
-                    else if (candidateTasks.Count > 1)
-                    {
-                        Log.Error("BOT 发现多个候选任务无法区分, Count: {Count}, Action: {Action}, MessageId: {MessageId}, 可能导致任务混淆！", 
-                            candidateTasks.Count, action, msgId);
-                        // 不匹配任何任务，避免错误匹配
-                        task = null;
+                        // 如果消息中有prompt，必须验证候选任务的prompt是否匹配
+                        if (!string.IsNullOrWhiteSpace(finalPrompt))
+                        {
+                            var matchedTask = candidateTasks.FirstOrDefault(c => 
+                                !string.IsNullOrWhiteSpace(c.PromptEn) && 
+                                (c.PromptEn == finalPrompt || 
+                                 c.PromptEn.FormatPrompt() == finalPrompt.FormatPrompt() ||
+                                 c.PromptEn.FormatPromptParam() == finalPrompt.FormatPromptParam()));
+                            
+                            if (matchedTask != null)
+                            {
+                                task = matchedTask;
+                                if (candidateTasks.Count > 1)
+                                {
+                                    Log.Warning("BOT 使用模糊匹配找到任务（已验证prompt匹配）, TaskId: {TaskId}, Action: {Action}, CandidateCount: {Count}", 
+                                        task.Id, action, candidateTasks.Count);
+                                }
+                            }
+                            else
+                            {
+                                // Prompt不匹配，拒绝匹配，避免串任务
+                                Log.Error("BOT 模糊匹配失败：候选任务的prompt与消息prompt不匹配, MessagePrompt: {MessagePrompt}, CandidateCount: {Count}, Action: {Action}, MessageId: {MessageId}, 拒绝匹配以避免串任务！", 
+                                    finalPrompt.Substring(0, Math.Min(50, finalPrompt.Length)), candidateTasks.Count, action, msgId);
+                                task = null;
+                            }
+                        }
+                        else
+                        {
+                            // 如果消息中没有prompt，且只有一个候选任务，才匹配
+                            if (candidateTasks.Count == 1)
+                            {
+                                task = candidateTasks.First();
+                                Log.Warning("BOT 使用模糊匹配找到任务（无prompt验证）, TaskId: {TaskId}, Action: {Action}, 建议优化任务提交时的唯一标识", 
+                                    task.Id, action);
+                            }
+                            else if (candidateTasks.Count > 1)
+                            {
+                                Log.Error("BOT 发现多个候选任务无法区分（无prompt验证）, Count: {Count}, Action: {Action}, MessageId: {MessageId}, 可能导致任务混淆！", 
+                                    candidateTasks.Count, action, msgId);
+                                task = null;
+                            }
+                        }
                     }
                 }
             }

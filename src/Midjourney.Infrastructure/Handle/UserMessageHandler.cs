@@ -131,13 +131,28 @@ namespace Midjourney.Infrastructure.Handle
 
             var botType = GetBotType(message);
 
-            // 优先级3: 通过PromptFull匹配
+            // 优先级3: 通过PromptFull匹配（严格模式：多个候选任务时不匹配）
             if (task == null)
             {
                 if (!string.IsNullOrWhiteSpace(fullPrompt))
                 {
-                    task = instance.FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && (c.BotType == botType || c.RealBotType == botType) && c.PromptFull == fullPrompt)
-                    .OrderBy(c => c.StartTime).FirstOrDefault();
+                    var candidateTasks = instance
+                        .FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && (c.BotType == botType || c.RealBotType == botType) && c.PromptFull == fullPrompt)
+                        .OrderBy(c => c.StartTime)
+                        .ToList();
+                    
+                    // 只有唯一候选任务时才匹配，避免串任务
+                    if (candidateTasks.Count == 1)
+                    {
+                        task = candidateTasks.First();
+                    }
+                    else if (candidateTasks.Count > 1)
+                    {
+                        Log.Warning("USER PromptFull匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, 跳过匹配避免串任务", 
+                            candidateTasks.Count, msgId);
+                        // 不匹配任何任务，避免错误匹配
+                        task = null;
+                    }
                 }
             }
 
@@ -157,15 +172,17 @@ namespace Midjourney.Infrastructure.Handle
                         .OrderBy(c => c.StartTime)
                         .ToList();
                     
-                    // 如果有多个相同prompt的任务，只取第一个（最早的）
-                    if (candidateTasks.Count > 0)
+                    // 只有唯一候选任务时才匹配，避免串任务
+                    if (candidateTasks.Count == 1)
                     {
                         task = candidateTasks.First();
-                        if (candidateTasks.Count > 1)
-                        {
-                            Log.Warning("USER FormatPrompt匹配发现多个相同提示词的任务, Count: {Count}, TaskId: {TaskId}, Prompt: {Prompt}", 
-                                candidateTasks.Count, task.Id, prompt.Substring(0, Math.Min(50, prompt.Length)));
-                        }
+                    }
+                    else if (candidateTasks.Count > 1)
+                    {
+                        Log.Warning("USER FormatPrompt匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 跳过匹配避免串任务", 
+                            candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)));
+                        // 不匹配任何任务，避免错误匹配
+                        task = null;
                     }
                 }
             }
@@ -183,15 +200,17 @@ namespace Midjourney.Infrastructure.Handle
                             .OrderBy(c => c.StartTime)
                             .ToList();
                     
-                    // 如果有多个相同prompt的任务，只取第一个（最早的）
-                    if (candidateTasks.Count > 0)
+                    // 只有唯一候选任务时才匹配，避免串任务
+                    if (candidateTasks.Count == 1)
                     {
                         task = candidateTasks.First();
-                        if (candidateTasks.Count > 1)
-                        {
-                            Log.Warning("USER FormatPromptParam匹配发现多个相同提示词的任务, Count: {Count}, TaskId: {TaskId}, Prompt: {Prompt}", 
-                                candidateTasks.Count, task.Id, prompt.Substring(0, Math.Min(50, prompt.Length)));
-                        }
+                    }
+                    else if (candidateTasks.Count > 1)
+                    {
+                        Log.Warning("USER FormatPromptParam匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 跳过匹配避免串任务", 
+                            candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)));
+                        // 不匹配任何任务，避免错误匹配
+                        task = null;
                     }
                 }
             }
