@@ -100,8 +100,8 @@ namespace Midjourney.Infrastructure.Handle
                     task.ImageUrl = imageUrl;
                     task.JobId = messageHash;
 
-                    // 如果 language 是 zh_cn 且配置了翻译服务，则翻译结果
-                    if (task.Language == "zh_cn" && !string.IsNullOrWhiteSpace(finalPrompt))
+                    // 如果 language 是 zh 或 zh_cn 且配置了翻译服务，则翻译结果
+                    if ((task.Language == "zh" || task.Language == "zh_cn") && !string.IsNullOrWhiteSpace(finalPrompt))
                     {
                         var setting = GlobalConfiguration.Setting;
                         if (setting != null && 

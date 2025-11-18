@@ -165,7 +165,7 @@ namespace Midjourney.Infrastructure.Models
         public string Description { get; set; }
 
         /// <summary>
-        /// 语言参数，如 zh_cn 表示需要将结果翻译为中文
+        /// 语言参数，如 zh 或 zh_cn 表示需要将结果翻译为中文
         /// </summary>
         [Column(StringLength = 20)]
         public string Language { get; set; }
