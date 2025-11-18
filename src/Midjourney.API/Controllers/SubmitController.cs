@@ -523,6 +523,7 @@ namespace Midjourney.API.Controllers
 
             task.BotType = GetBotType(describeDTO.BotType);
             task.Action = TaskAction.DESCRIBE;
+            task.Language = describeDTO.Language;
 
             string taskFileName = $"{task.Id}.{MimeTypeUtils.GuessFileSuffix(dataUrl.MimeType) ?? Path.GetExtension(dataUrl.Url)}";
             task.Description = $"/describe {taskFileName}";

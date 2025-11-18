@@ -24,6 +24,7 @@
 using Discord.WebSocket;
 using Midjourney.Infrastructure.Data;
 using Midjourney.Infrastructure.LoadBalancer;
+using Midjourney.Infrastructure.Services;
 using Midjourney.Infrastructure.Util;
 using Serilog;
 
@@ -98,6 +99,59 @@ namespace Midjourney.Infrastructure.Handle
 
                     task.ImageUrl = imageUrl;
                     task.JobId = messageHash;
+
+                    // 如果 language 是 zh_cn 且配置了翻译服务，则翻译结果
+                    if (task.Language == "zh_cn" && !string.IsNullOrWhiteSpace(finalPrompt))
+                    {
+                        var setting = GlobalConfiguration.Setting;
+                        if (setting != null && 
+                            ((setting.TranslateWay == TranslateWay.GPT && setting.Openai != null && !string.IsNullOrWhiteSpace(setting.Openai.GptApiKey)) ||
+                             (setting.TranslateWay == TranslateWay.BAIDU && setting.BaiduTranslate != null && !string.IsNullOrWhiteSpace(setting.BaiduTranslate.Appid))))
+                        {
+                            try
+                            {
+                                ITranslateService translateService = null;
+                                if (setting.TranslateWay == TranslateWay.GPT)
+                                {
+                                    translateService = new GPTTranslateService();
+                                }
+                                else if (setting.TranslateWay == TranslateWay.BAIDU)
+                                {
+                                    translateService = new BaiduTranslateService();
+                                }
+
+                                if (translateService != null)
+                                {
+                                    var translatedPrompt = translateService.TranslateToChinese(finalPrompt);
+                                    if (!string.IsNullOrWhiteSpace(translatedPrompt))
+                                    {
+                                        task.Prompt = translatedPrompt;
+                                        task.PromptFull = translatedPrompt;
+                                        // 更新 properties 里的 finalPrompt 为翻译后的中文
+                                        task.SetProperty(Constants.TASK_PROPERTY_FINAL_PROMPT, translatedPrompt);
+                                        Log.Information("DESCRIBE 任务结果已翻译为中文: TaskId={TaskId}, Prompt={Prompt}", task.Id, translatedPrompt);
+                                    }
+                                    else
+                                    {
+                                        // 如果翻译返回空值，至少设置 Prompt 为原文，避免 Prompt 为空
+                                        task.Prompt = finalPrompt;
+                                        task.PromptFull = finalPrompt;
+                                        Log.Warning("DESCRIBE 任务翻译返回空值，使用原文: TaskId={TaskId}", task.Id);
+                                    }
+                                }
+                                else
+                                {
+                                    // 如果没有翻译服务，至少设置 Prompt 为原文，避免 Prompt 为空
+                                    task.Prompt = finalPrompt;
+                                    task.PromptFull = finalPrompt;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Warning(ex, "翻译 DESCRIBE 任务结果失败: TaskId={TaskId}", task.Id);
+                            }
+                        }
+                    }
 
                     FinishTask(task, message);
 

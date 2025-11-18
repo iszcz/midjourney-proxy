@@ -52,5 +52,10 @@ namespace Midjourney.Infrastructure.Dto
         /// 账号过滤支持
         /// </summary>
         public AccountFilter AccountFilter { get; set; }
+
+        /// <summary>
+        /// 语言参数，如 zh_cn 表示需要将结果翻译为中文
+        /// </summary>
+        public string Language { get; set; }
     }
 }

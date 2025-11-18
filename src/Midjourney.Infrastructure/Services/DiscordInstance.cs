@@ -2111,6 +2111,13 @@ namespace Midjourney.Infrastructure.LoadBalancer
                             _logger.Warning("Http 请求执行频繁，等待重试 {@0}, {@1}, {@2}", paramsStr, response.StatusCode, response.Content);
                             continue;
                         }
+                        else
+                        {
+                            // 重试 5 次都失败，明确返回失败
+                            _logger.Error("Http 请求执行频繁，重试 5 次后仍然失败 {@0}, {@1}, {@2}", paramsStr, response.StatusCode, response.Content);
+                            var tooManyRequestsError = $"TooManyRequests: 请求过于频繁，已重试 5 次仍失败。{paramsStr.Substring(0, Math.Min(paramsStr.Length, 200))}";
+                            return Message.Of(ReturnCode.FAILURE, tooManyRequestsError);
+                        }
                     }
                     else if (response.StatusCode == HttpStatusCode.NotFound)
                     {
