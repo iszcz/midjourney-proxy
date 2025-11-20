@@ -138,20 +138,18 @@ namespace Midjourney.Infrastructure.Handle
                 {
                     var candidateTasks = instance
                         .FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) && (c.BotType == botType || c.RealBotType == botType) && c.PromptFull == fullPrompt)
-                        .OrderBy(c => c.StartTime)
+                        .OrderByDescending(c => c.Status == TaskStatus.SUBMITTED ? 1 : 0)
+                        .ThenByDescending(c => c.SubmitTime ?? 0)
                         .ToList();
                     
-                    // 只有唯一候选任务时才匹配，避免串任务
-                    if (candidateTasks.Count == 1)
+                    if (candidateTasks.Count > 0)
                     {
                         task = candidateTasks.First();
-                    }
-                    else if (candidateTasks.Count > 1)
-                    {
-                        Log.Warning("USER PromptFull匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, 跳过匹配避免串任务", 
-                            candidateTasks.Count, msgId);
-                        // 不匹配任何任务，避免错误匹配
-                        task = null;
+                        if (candidateTasks.Count > 1)
+                        {
+                            Log.Warning("USER PromptFull匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, 选择最近提交的任务: {TaskId} (SubmitTime: {SubmitTime})", 
+                                candidateTasks.Count, msgId, task.Id, task.SubmitTime?.ToDateTimeString() ?? "N/A");
+                        }
                     }
                 }
             }
@@ -169,20 +167,18 @@ namespace Midjourney.Infrastructure.Handle
                         && (c.BotType == botType || c.RealBotType == botType)
                         && !string.IsNullOrWhiteSpace(c.PromptEn)
                         && c.PromptEn.FormatPrompt() == prompt)  // ✅ 仅精确匹配，移除危险的EndsWith/StartsWith
-                        .OrderBy(c => c.StartTime)
+                        .OrderByDescending(c => c.Status == TaskStatus.SUBMITTED ? 1 : 0)
+                        .ThenByDescending(c => c.SubmitTime ?? 0)
                         .ToList();
                     
-                    // 只有唯一候选任务时才匹配，避免串任务
-                    if (candidateTasks.Count == 1)
+                    if (candidateTasks.Count > 0)
                     {
                         task = candidateTasks.First();
-                    }
-                    else if (candidateTasks.Count > 1)
-                    {
-                        Log.Warning("USER FormatPrompt匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 跳过匹配避免串任务", 
-                            candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)));
-                        // 不匹配任何任务，避免错误匹配
-                        task = null;
+                        if (candidateTasks.Count > 1)
+                        {
+                            Log.Warning("USER FormatPrompt匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 选择最近提交的任务: {TaskId} (SubmitTime: {SubmitTime})", 
+                                candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)), task.Id, task.SubmitTime?.ToDateTimeString() ?? "N/A");
+                        }
                     }
                 }
             }
@@ -197,20 +193,18 @@ namespace Midjourney.Infrastructure.Handle
                             .FindRunningTask(c => (c.Status == TaskStatus.IN_PROGRESS || c.Status == TaskStatus.SUBMITTED) &&
                             (c.BotType == botType || c.RealBotType == botType) && !string.IsNullOrWhiteSpace(c.PromptEn)
                             && c.PromptEn.FormatPromptParam() == prompt)  // ✅ 仅精确匹配，移除危险的EndsWith/StartsWith
-                            .OrderBy(c => c.StartTime)
+                            .OrderByDescending(c => c.Status == TaskStatus.SUBMITTED ? 1 : 0)
+                            .ThenByDescending(c => c.SubmitTime ?? 0)
                             .ToList();
                     
-                    // 只有唯一候选任务时才匹配，避免串任务
-                    if (candidateTasks.Count == 1)
+                    if (candidateTasks.Count > 0)
                     {
                         task = candidateTasks.First();
-                    }
-                    else if (candidateTasks.Count > 1)
-                    {
-                        Log.Warning("USER FormatPromptParam匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 跳过匹配避免串任务", 
-                            candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)));
-                        // 不匹配任何任务，避免错误匹配
-                        task = null;
+                        if (candidateTasks.Count > 1)
+                        {
+                            Log.Warning("USER FormatPromptParam匹配发现多个相同提示词的任务, Count: {Count}, MessageId: {MessageId}, Prompt: {Prompt}, 选择最近提交的任务: {TaskId} (SubmitTime: {SubmitTime})", 
+                                candidateTasks.Count, msgId, prompt.Substring(0, Math.Min(50, prompt.Length)), task.Id, task.SubmitTime?.ToDateTimeString() ?? "N/A");
+                        }
                     }
                 }
             }
