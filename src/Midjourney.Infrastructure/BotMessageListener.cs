@@ -27,6 +27,7 @@ using Discord.Commands;
 using Discord.Net.Rest;
 using Discord.Net.WebSockets;
 using Discord.WebSocket;
+using System.Collections.Concurrent;
 using Midjourney.Infrastructure.Data;
 using Midjourney.Infrastructure.Dto;
 using Midjourney.Infrastructure.Handle;
@@ -58,6 +59,7 @@ namespace Midjourney.Infrastructure
         private readonly IPromptReviewService _promptReviewService;
         private readonly ITaskService _taskService;
         private readonly ITaskStoreService _taskStoreService;
+        private readonly ConcurrentDictionary<string, PendingEmbedError> _pendingEmbedErrors = new();
 
         private DiscordInstance _discordInstance;
         private IEnumerable<BotMessageHandler> _botMessageHandlers;
@@ -141,6 +143,13 @@ namespace Midjourney.Infrastructure
         }
 
         private DiscordSocketClient _client;
+
+        private sealed class PendingEmbedError
+        {
+            public string MessageId { get; init; }
+            public string Title { get; init; }
+            public string Description { get; init; }
+        }
 
         // Keep the CommandService and DI container around for use with commands.
         // These two types require you install the Discord.Net.Commands package.
@@ -1171,24 +1180,7 @@ namespace Midjourney.Infrastructure
                                                         }
                                                     }
 
-                                                    var error = $"{title}, {desc}";
-
-                                                    task.MessageId = id;
-                                                    task.Description = error;
-
-                                                    if (!task.MessageIds.Contains(id))
-                                                    {
-                                                        task.MessageIds.Add(id);
-                                                    }
-
-                                                    // 检查是否为Banned prompt detected错误并尝试AI审核重试
-                                                    if (title == "Banned prompt detected" && TryAIReviewRetry(task, desc))
-                                                    {
-                                                        // AI审核重试成功，不执行task.Fail
-                                                        return;
-                                                    }
-
-                                                    task.Fail(error);
+                                                    ApplyEmbedErrorToTask(task, id, title, desc);
                                                 }
                                             }
                                         }
@@ -1204,17 +1196,7 @@ namespace Midjourney.Infrastructure
                                                 {
                                                     if (messageType == MessageType.CREATE)
                                                     {
-                                                        var error = $"{title}, {desc}";
-
-                                                        task.MessageId = id;
-                                                        task.Description = error;
-
-                                                        if (!task.MessageIds.Contains(id))
-                                                        {
-                                                            task.MessageIds.Add(id);
-                                                        }
-
-                                                        task.Fail(error);
+                                                        ApplyEmbedErrorToTask(task, id, title, desc);
                                                     }
                                                 }
                                             }
@@ -1226,8 +1208,19 @@ namespace Midjourney.Infrastructure
                                                     .FirstOrDefault();
                                                 if (task != null)
                                                 {
-                                                    var error = $"{title}, {desc}";
-                                                    task.Fail(error);
+                                                    ApplyEmbedErrorToTask(task, id, title, desc);
+                                                }
+                                                else if (!string.IsNullOrWhiteSpace(metaId))
+                                                {
+                                                    _pendingEmbedErrors[metaId] = new PendingEmbedError
+                                                    {
+                                                        MessageId = id,
+                                                        Title = title,
+                                                        Description = desc
+                                                    };
+
+                                                    _logger.Warning("暂存未匹配的Embed错误消息，等待Interaction成功后再处理。Account: {Account}, MetaId: {MetaId}, Error: {Title}", 
+                                                        Account.GetDisplay(), metaId, title);
                                                 }
                                                 else
                                                 {
@@ -1295,6 +1288,7 @@ namespace Midjourney.Infrastructure
                                     if (messageType == MessageType.INTERACTION_SUCCESS)
                                     {
                                         task.InteractionMetadataId = id;
+                                        TryHandlePendingEmbedError(id, task);
                                     }
                                     // MJ 局部重绘完成后
                                     else if (messageType == MessageType.INTERACTION_IFRAME_MODAL_CREATE
@@ -1669,6 +1663,51 @@ namespace Midjourney.Infrastructure
                 _logger.Error(ex, "ResubmitTask: 重新提交任务异常，TaskId: {TaskId}", task.Id);
                 return false;
             }
+        }
+
+        private void ApplyEmbedErrorToTask(TaskInfo task, string messageId, string title, string desc)
+        {
+            if (task == null || task.Status == TaskStatus.SUCCESS || task.Status == TaskStatus.FAILURE)
+            {
+                return;
+            }
+
+            var error = $"{title}, {desc}";
+
+            if (!string.IsNullOrWhiteSpace(messageId))
+            {
+                task.MessageId = messageId;
+                if (!task.MessageIds.Contains(messageId))
+                {
+                    task.MessageIds.Add(messageId);
+                }
+            }
+
+            task.Description = error;
+
+            if (title == "Banned prompt detected" && TryAIReviewRetry(task, desc))
+            {
+                return;
+            }
+
+            task.Fail(error);
+        }
+
+        private bool TryHandlePendingEmbedError(string metaId, TaskInfo task)
+        {
+            if (string.IsNullOrWhiteSpace(metaId) || task == null)
+            {
+                return false;
+            }
+
+            if (_pendingEmbedErrors.TryRemove(metaId, out var pendingError))
+            {
+                _logger.Warning("检测到延迟的Embed错误消息，metaId: {MetaId}, TaskId: {TaskId}, Error: {Title}", metaId, task.Id, pendingError.Title);
+                ApplyEmbedErrorToTask(task, pendingError.MessageId, pendingError.Title, pendingError.Description);
+                return true;
+            }
+
+            return false;
         }
 
         public void Dispose()
