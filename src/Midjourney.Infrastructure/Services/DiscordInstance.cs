@@ -574,6 +574,16 @@ namespace Midjourney.Infrastructure.LoadBalancer
         public void ExitTask(TaskInfo task)
         {
             _taskFutureMap.TryRemove(task.Id, out _);
+            
+            // 🔧 修复：从运行任务列表中移除任务
+            // 如果任务已经完成（SUCCESS/FAILURE），应该从 _runningTasks 中移除
+            // 这可以防止已完成的任务占用运行任务计数，影响信号量可用性判断
+            if (_runningTasks.TryRemove(task.Id, out _))
+            {
+                _logger.Debug("[{@0}] ExitTask: 已从运行任务列表中移除任务 {@1}, 状态: {@2}, 剩余运行任务数: {@3}, 可用信号量: {@4}", 
+                    Account.GetDisplay(), task.Id, task.Status, _runningTasks.Count, _semaphoreSlimLock.AvailableCount);
+            }
+            
             SaveAndNotify(task);
 
             // 从优先队列中移除任务
@@ -839,7 +849,41 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 info.Progress = "0%";
                 SaveAndNotify(info);
 
-                var result = await discordSubmit();
+                // 启动提交任务和超时检测的并行等待
+                var submittedEarlyFailMs = SubmittedEarlyFailSeconds > 0 ? SubmittedEarlyFailSeconds * 1000 : 0;
+                Message result;
+                
+                // 如果启用了提前超时检测，则并行检测 HTTP 请求是否超时
+                if (submittedEarlyFailMs > 0)
+                {
+                    var submitSw = new Stopwatch();
+                    submitSw.Start();
+                    
+                    var submitTask = discordSubmit();
+                    var timeoutTask = Task.Delay(submittedEarlyFailMs);
+                    
+                    // 等待提交任务或超时中任意一个完成
+                    var completedTask = await Task.WhenAny(submitTask, timeoutTask);
+                    
+                    // 如果超时先完成，说明 HTTP 请求已经超过阈值时间
+                    if (completedTask == timeoutTask && !submitTask.IsCompleted)
+                    {
+                        _logger.Warning("⚠️ Discord 提交请求超时 {TaskId}, 已等待: {Elapsed}s, 阈值: {Threshold}s。HTTP 请求可能被阻塞。MessageId: {MessageId}, InteractionMetadataId: {InteractionMetadataId}", 
+                            info.Id, submitSw.ElapsedMilliseconds / 1000, SubmittedEarlyFailSeconds, info.MessageId ?? "null", info.InteractionMetadataId ?? "null");
+                        
+                        info.Fail($"Discord 提交请求超时：超过 {SubmittedEarlyFailSeconds} 秒未响应");
+                        SaveAndNotify(info);
+                        return;
+                    }
+                    
+                    // 提交任务已完成，获取结果
+                    result = await submitTask;
+                }
+                else
+                {
+                    // 未启用提前超时检测，直接等待提交任务
+                    result = await discordSubmit();
+                }
 
                 // 判断当前实例是否可用
                 if (!IsAlive)
@@ -874,7 +918,9 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 var sw = new Stopwatch();
                 sw.Start();
                 var lastLogTime = 0L;
-                var submittedEarlyFailMs = SubmittedEarlyFailSeconds > 0 ? SubmittedEarlyFailSeconds * 1000 : 0;
+                submittedEarlyFailMs = SubmittedEarlyFailSeconds > 0 ? SubmittedEarlyFailSeconds * 1000 : 0;
+                var lastStatusCheckTime = sw.ElapsedMilliseconds;
+                var statusCheckInterval = 10000; // 每10秒检查一次状态是否卡住
 
                 while (info.Status == TaskStatus.SUBMITTED || info.Status == TaskStatus.IN_PROGRESS)
                 {
@@ -883,31 +929,43 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     // 每 500ms
                     await Task.Delay(500);
                     
+                    var elapsedMs = sw.ElapsedMilliseconds;
+                    
                     // 🔍 诊断：每30秒记录一次任务执行状态，帮助定位卡住的任务
-                    if (sw.ElapsedMilliseconds - lastLogTime > 30000)
+                    if (elapsedMs - lastLogTime > 30000)
                     {
-                        lastLogTime = sw.ElapsedMilliseconds;
-                        _logger.Information("⏳ 任务执行中 {TaskId}, 状态: {Status}, 进度: {Progress}, 已执行: {Elapsed}秒, 超时设置: {Timeout}分钟", 
-                            info.Id, info.Status, info.Progress, sw.ElapsedMilliseconds / 1000, timeoutMin);
+                        lastLogTime = elapsedMs;
+                        _logger.Information("⏳ 任务执行中 {TaskId}, 状态: {Status}, 进度: {Progress}, 已执行: {Elapsed}秒, 超时设置: {Timeout}分钟, MessageId: {MessageId}, InteractionMetadataId: {InteractionMetadataId}", 
+                            info.Id, info.Status, info.Progress, elapsedMs / 1000, timeoutMin, info.MessageId ?? "null", info.InteractionMetadataId ?? "null");
                     }
 
+                    // 🔍 增强诊断：如果状态长时间没有变化，记录详细信息
+                    if (elapsedMs - lastStatusCheckTime > statusCheckInterval)
+                    {
+                        lastStatusCheckTime = elapsedMs;
+                        if (info.Status == TaskStatus.SUBMITTED)
+                        {
+                            _logger.Warning("⚠️ 任务 {TaskId} 状态长时间停留在 SUBMITTED, 已等待: {Elapsed}秒, MessageId: {MessageId}, InteractionMetadataId: {InteractionMetadataId}, 可能消息匹配失败", 
+                                info.Id, elapsedMs / 1000, info.MessageId ?? "null", info.InteractionMetadataId ?? "null");
+                        }
+                    }
 
                     // ⏱️ SUBMITTED 无进展提前失败（仅在启用时，默认 120 秒）
                     if (submittedEarlyFailMs > 0 
                         && info.Status == TaskStatus.SUBMITTED 
-                        && sw.ElapsedMilliseconds > submittedEarlyFailMs)
+                        && elapsedMs > submittedEarlyFailMs)
                     {
-                        _logger.Warning("⏳ SUBMITTED 提前超时 {TaskId}, 已等待: {Elapsed}s, 阈值: {Threshold}s。判定为消息链路异常或被CF/429阻断，提前失败释放信号量。", 
-                            info.Id, sw.ElapsedMilliseconds / 1000, SubmittedEarlyFailSeconds);
+                        _logger.Warning("⏳ SUBMITTED 提前超时 {TaskId}, 已等待: {Elapsed}s, 阈值: {Threshold}s。判定为消息链路异常或被CF/429阻断，提前失败释放信号量。MessageId: {MessageId}, InteractionMetadataId: {InteractionMetadataId}", 
+                            info.Id, elapsedMs / 1000, SubmittedEarlyFailSeconds, info.MessageId ?? "null", info.InteractionMetadataId ?? "null");
                         info.Fail($"提交后 {SubmittedEarlyFailSeconds} 秒未收到 Discord 响应，已提前失败，请重试");
                         SaveAndNotify(info);
                         return;
                     }
 
-                    if (sw.ElapsedMilliseconds > timeoutMin * 60 * 1000)
+                    if (elapsedMs > timeoutMin * 60 * 1000)
                     {
-                        _logger.Warning("⏰ 任务超时 {TaskId}, 状态: {Status}, 进度: {Progress}, 执行时间: {Elapsed}秒", 
-                            info.Id, info.Status, info.Progress, sw.ElapsedMilliseconds / 1000);
+                        _logger.Warning("⏰ 任务超时 {TaskId}, 状态: {Status}, 进度: {Progress}, 执行时间: {Elapsed}秒, MessageId: {MessageId}, InteractionMetadataId: {InteractionMetadataId}", 
+                            info.Id, info.Status, info.Progress, elapsedMs / 1000, info.MessageId ?? "null", info.InteractionMetadataId ?? "null");
                         info.Fail($"执行超时 {timeoutMin} 分钟");
                         SaveAndNotify(info);
                         return;
@@ -984,6 +1042,41 @@ namespace Midjourney.Infrastructure.LoadBalancer
         public void RemoveRunningTask(TaskInfo task)
         {
             _runningTasks.TryRemove(task.Id, out _);
+        }
+
+        /// <summary>
+        /// 诊断方法：检查 SUBMITTED 任务是否卡住并占用信号量
+        /// </summary>
+        /// <returns>诊断信息</returns>
+        public string DiagnoseStuckTasks()
+        {
+            var runningTasks = _runningTasks.Values.ToList();
+            var submittedTasks = runningTasks.Where(t => t.Status == TaskStatus.SUBMITTED).ToList();
+            var queueCount = _queueTasks.Count + _priorityQueueTasks.Count;
+            var futureMapCount = _taskFutureMap.Count;
+            var heldCount = _semaphoreSlimLock.CurrentlyHeldCount;
+            var availableCount = _semaphoreSlimLock.AvailableCount;
+            
+            var info = $"诊断信息 - 队列任务: {queueCount}, 运行任务: {runningTasks.Count}, FutureMap: {futureMapCount}, " +
+                      $"已持有信号量: {heldCount}, 可用信号量: {availableCount}, SUBMITTED任务: {submittedTasks.Count}";
+            
+            if (submittedTasks.Any())
+            {
+                info += "\n卡住的 SUBMITTED 任务:";
+                foreach (var task in submittedTasks)
+                {
+                    var elapsed = DateTimeOffset.Now.ToUnixTimeMilliseconds() - (task.StartTime ?? 0);
+                    info += $"\n  - TaskId: {task.Id}, 已等待: {elapsed / 1000}秒, MessageId: {task.MessageId ?? "null"}";
+                }
+            }
+            
+            // 检测信号量泄漏
+            if (heldCount > runningTasks.Count + 2 && runningTasks.Count == 0 && queueCount > 0)
+            {
+                info += $"\n⚠️ 检测到信号量泄漏！已持有: {heldCount}, 实际运行: {runningTasks.Count}, 队列等待: {queueCount}";
+            }
+            
+            return info;
         }
 
         /// <summary>

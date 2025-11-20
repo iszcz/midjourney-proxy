@@ -88,8 +88,30 @@ namespace Midjourney.Infrastructure.Handle
                 }
 
                 var botType = GetBotType(message);
-                // 移除基于 PromptFull 的模糊回退匹配，避免并发串单
-                // 只允许通过强键（MessageId / InteractionMetadataId）命中任务
+                
+                // 🔧 增强容错：如果强键匹配失败，尝试基于 PromptFull 的回退匹配（仅当任务状态为 SUBMITTED 且等待时间较长时）
+                if (task == null && !string.IsNullOrWhiteSpace(fullPrompt))
+                {
+                    // 只对 SUBMITTED 状态的任务进行回退匹配，避免并发串单
+                    var fallbackTasks = instance.FindRunningTask(c =>
+                        c.Status == TaskStatus.SUBMITTED
+                        && (c.BotType == botType || c.RealBotType == botType)
+                        && c.PromptFull == fullPrompt)
+                        .OrderBy(c => c.StartTime)
+                        .ToList();
+                    
+                    if (fallbackTasks.Count == 1)
+                    {
+                        task = fallbackTasks.First();
+                        Log.Warning("⚠️ Start: 通过 PromptFull 回退匹配到任务 {TaskId}, msgId={MsgId}, metaId={MetaId}, 可能强键未正确设置", 
+                            task.Id, msgId, message.InteractionMetadata?.Id);
+                    }
+                    else if (fallbackTasks.Count > 1)
+                    {
+                        Log.Warning("⚠️ Start: 通过 PromptFull 匹配到多个任务 ({Count}个), 忽略回退匹配以避免串单。msgId={MsgId}, metaId={MetaId}", 
+                            fallbackTasks.Count, msgId, message.InteractionMetadata?.Id);
+                    }
+                }
 
                 if (task == null || task.Status == TaskStatus.SUCCESS || task.Status == TaskStatus.FAILURE)
                 {
@@ -146,8 +168,30 @@ namespace Midjourney.Infrastructure.Handle
                 }
 
                 var botType = GetBotType(message);
-                // 移除基于 PromptFull 的模糊回退匹配，避免并发串单
-                // 只允许通过强键（MessageId / InteractionMetadataId）命中任务
+                
+                // 🔧 增强容错：如果强键匹配失败，尝试基于 PromptFull 的回退匹配（仅当任务状态为 SUBMITTED 且等待时间较长时）
+                if (task == null && !string.IsNullOrWhiteSpace(fullPrompt))
+                {
+                    // 只对 SUBMITTED 状态的任务进行回退匹配，避免并发串单
+                    var fallbackTasks = instance.FindRunningTask(c =>
+                        c.Status == TaskStatus.SUBMITTED
+                        && (c.BotType == botType || c.RealBotType == botType)
+                        && c.PromptFull == fullPrompt)
+                        .OrderBy(c => c.StartTime)
+                        .ToList();
+                    
+                    if (fallbackTasks.Count == 1)
+                    {
+                        task = fallbackTasks.First();
+                        Log.Warning("⚠️ Progress: 通过 PromptFull 回退匹配到任务 {TaskId}, msgId={MsgId}, metaId={MetaId}, 可能强键未正确设置", 
+                            task.Id, msgId, message.InteractionMetadata?.Id);
+                    }
+                    else if (fallbackTasks.Count > 1)
+                    {
+                        Log.Warning("⚠️ Progress: 通过 PromptFull 匹配到多个任务 ({Count}个), 忽略回退匹配以避免串单。msgId={MsgId}, metaId={MetaId}", 
+                            fallbackTasks.Count, msgId, message.InteractionMetadata?.Id);
+                    }
+                }
 
                 if (task == null || task.Status == TaskStatus.SUCCESS || task.Status == TaskStatus.FAILURE)
                 {
