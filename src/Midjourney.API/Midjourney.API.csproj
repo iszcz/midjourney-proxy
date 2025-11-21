@@ -32,7 +32,7 @@
 	<ItemGroup>
 		<ProjectReference Include="..\Midjourney.Infrastructure\Midjourney.Infrastructure.csproj" />
 	</ItemGroup>
-
+	
 	<ItemGroup>
 	  <Folder Include="Upgrade\" />
 	</ItemGroup>

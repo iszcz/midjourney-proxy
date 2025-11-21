@@ -625,7 +625,7 @@ namespace Midjourney.Infrastructure.Services
                 isNewTask: true,
                 botType: info.RealBotType ?? info.BotType,
                 preferredSpeedMode: info.Mode,
-                isYm: true,
+                // isYm: true,
                 isVideo: true,
                 isHdVideo: isHdVideo);
             }
@@ -654,10 +654,10 @@ namespace Midjourney.Infrastructure.Services
                 return SubmitResultVO.Fail(ReturnCode.FAILURE, "提交失败，队列已满，请稍后重试");
             }
 
-            if (!instance.Account.IsYouChuan && !instance.Account.IsOfficial)
-            {
-                return SubmitResultVO.Fail(ReturnCode.FAILURE, "当前账号不支持主动视频任务");
-            }
+            // if (!instance.Account.IsYouChuan && !instance.Account.IsOfficial)
+            // {
+            //     return SubmitResultVO.Fail(ReturnCode.FAILURE, "当前账号不支持主动视频任务");
+            // }
 
             info.Mode = mode;
             info.IsOfficial = instance.Account.IsOfficial;
@@ -719,20 +719,20 @@ namespace Midjourney.Infrastructure.Services
                             }
                         }
                     }
-                    else if (endUrl?.Data != null && endUrl.Data.Length > 0)
+                    else if (startUrl?.Data != null && startUrl.Data.Length > 0)
                     {
-                        var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(endUrl.MimeType)}";
-                        endImageUrl = await instance.YmTaskService.UploadFile(info, endUrl.Data, taskFileName);
+                        var taskFileName = $"{Guid.NewGuid():N}.{MimeTypeUtils.GuessFileSuffix(startUrl.MimeType)}";
+                        startImageUrl = await instance.YmTaskService.UploadFile(info, startUrl.Data, taskFileName);
                     }
                 }
-                else if (instance.Account.IsOfficial)
+                else
                 {
                     // 开始图片
                     if (startUrl?.Url?.StartsWith("http", StringComparison.OrdinalIgnoreCase) == true)
                     {
                         startImageUrl = startUrl.Url;
                     }
-                    else if (endUrl?.Data != null && endUrl.Data.Length > 0)
+                    else if (startUrl?.Data != null && startUrl.Data.Length > 0)
                     {
                         var taskFileName = $"{info.Id}.{MimeTypeUtils.GuessFileSuffix(startUrl.MimeType)}";
                         var uploadResult = await instance.UploadAsync(taskFileName, startUrl);
@@ -772,10 +772,6 @@ namespace Midjourney.Infrastructure.Services
                         }
                         endImageUrl = sendImageResult.Description;
                     }
-                }
-                else
-                {
-                    return Message.Failure("当前账号不支持视频任务。");
                 }
 
                 if (!string.IsNullOrWhiteSpace(startImageUrl))
@@ -829,6 +825,9 @@ namespace Midjourney.Infrastructure.Services
 
                 if (videoDTO.Action?.Equals("extend", StringComparison.OrdinalIgnoreCase) == true)
                 {
+                    // 对于 Partner 和 Official 账号，直接调用 extend 按钮
+                    if (info.IsPartner || info.IsOfficial)
+                {
                     var customId = "";
                     if (info.IsPartner)
                     {
@@ -850,13 +849,65 @@ namespace Midjourney.Infrastructure.Services
                         State = info.State,
                         CustomId = customId
                     }, targetTask, _taskStoreService, instance);
+                    }
+                    else
+                    {
+                        // 对于 Discord 账号，需要分三步：
+                        // 1. 先调用 video_virtual_upscale 按钮进行放大
+                        // 2. 放大完成后，在新任务上调用 animate_{motion}_extend 按钮
+                        // 3. 如果开启了 remix 模式，还需要处理 modal 弹窗
+
+                        // 获取目标任务的 OfficialTaskId 或 MessageHash
+                        var taskId = targetTask.OfficialTaskId;
+                        if (string.IsNullOrWhiteSpace(taskId))
+                        {
+                            taskId = targetTask.GetProperty<string>(Constants.TASK_PROPERTY_MESSAGE_HASH, default);
+                        }
+                        if (string.IsNullOrWhiteSpace(taskId))
+                        {
+                            taskId = targetTask.JobId;
+                        }
+
+                        if (string.IsNullOrWhiteSpace(taskId))
+                        {
+                            return Message.Of(ReturnCode.VALIDATION_ERROR, "目标任务缺少必要的ID信息");
+                        }
+
+                        // 构造 video_virtual_upscale 的 customId
+                        var upscaleCustomId = $"MJ::JOB::video_virtual_upscale::{videoDTO.Index + 1}::{taskId}";
+
+                        // 保存扩展相关的信息，以便在放大完成后继续执行扩展
+                        info.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_TARGET_TASK_ID, info.Id);
+                        info.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_PROMPT, prompt);
+                        info.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_MOTION, videoDTO.Motion?.ToLower() ?? "high");
+                        info.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_INDEX, videoDTO.Index + 1);
+                        info.SetProperty(Constants.TASK_PROPERTY_CUSTOM_ID, upscaleCustomId);
+                        info.Action = TaskAction.UPSCALE;
+                        info.PromptEn = prompt;
+                        info.VideoType = videoDTO.VideoType;
+                        info.Description = "/video extend";
+                        _taskStoreService.Save(info);
+
+                        // 先执行放大操作
+                        return await instance.ActionAsync(targetTask.MessageId, upscaleCustomId,
+                            targetTask.GetProperty<int>(Constants.TASK_PROPERTY_FLAGS, default),
+                            info.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default), info);
+                    }
                 }
                 else
                 {
                     info.PromptEn = prompt;
                     info.Description = "/video " + info.Prompt;
                     _taskStoreService.Save(info);
+                    if (info.IsPartner || info.IsOfficial)
+                    {
                     return await instance.YmTaskService.SubmitTaskAsync(info, _taskStoreService, instance);
+                    }
+                    else
+                    {
+                        return await instance.ImagineAsync(info, info.PromptEn,
+                            info.GetProperty<string>(Constants.TASK_PROPERTY_NONCE, default));
+                    }
                 }
             });
         }

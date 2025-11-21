@@ -1,0 +1,135 @@
+# Cursor Rules for Midjourney Proxy
+
+## Project Overview
+This is a Midjourney Discord proxy service that enables AI drawing via API.
+
+## Recent Changes
+
+### [2024-11-21] Video Extend Feature Implementation
+
+#### Task: Implement video extend flow for Discord accounts
+The video extend operation for Discord accounts now follows a three-step process:
+
+**Step 1: Video Upscale**
+- When `/video` extend is called for Discord accounts (non-Partner/Official), first trigger `video_virtual_upscale`
+- The upscale task stores extend parameters for later use:
+  - `TASK_PROPERTY_VIDEO_EXTEND_TARGET_TASK_ID`: Original task ID
+  - `TASK_PROPERTY_VIDEO_EXTEND_PROMPT`: User's prompt for extend
+  - `TASK_PROPERTY_VIDEO_EXTEND_MOTION`: Motion type (high/low)
+  - `TASK_PROPERTY_VIDEO_EXTEND_INDEX`: Video index to extend
+
+**Step 2: Trigger Extend After Upscale**
+- In `UserUpscaleSuccessHandler.cs`, added `CheckAndTriggerVideoExtend()` method
+- When upscale completes, automatically triggers `animate_{motion}_extend` button
+- Creates a new task to track the extend operation
+- Uses the upscaled video's messageHash as the task ID
+
+**Step 3: Auto-submit Remix Modal**
+- In `BotMessageListener.cs`, added auto-submit logic for video extend modal
+- When INTERACTION_SUCCESS is received and RemixAutoSubmit is enabled:
+  - Waits 1.5 seconds for modal to be ready
+  - Automatically submits the modal with user's prompt
+  - Uses `RemixAsync()` to submit the modal
+
+#### Files Modified:
+1. `src/Midjourney.Base/Data/Constants.cs`
+   - Added constants for video extend tracking
+
+2. `src/Midjourney.Infrastructure/Services/TaskService.cs`
+   - Modified `SubmitVideo()` to handle Discord account extend flow
+   - For Discord accounts: triggers upscale first instead of direct extend
+
+3. `src/Midjourney.Infrastructure/Handle/UserUpscaleSuccessHandler.cs`
+   - Added `CheckAndTriggerVideoExtend()` method
+   - Automatically triggers extend after upscale completes
+
+4. `src/Midjourney.Infrastructure/BotMessageListener.cs`
+   - Added auto-submit logic for video extend remix modal
+   - Handles INTERACTION_SUCCESS event for video extend tasks
+
+#### Usage Example:
+```json
+POST /mj/submit/video
+{
+    "prompt": "又飞来好几只蜜蜂",
+    "motion": "high",
+    "action": "extend",
+    "index": 0,
+    "taskId": "1763718093385170"
+}
+```
+
+For Discord accounts, this will:
+1. Upscale video #1 from the parent task
+2. Wait for upscale to complete
+3. Trigger extend button on the upscaled video
+4. If remix mode is on, auto-submit the modal with the prompt
+
+#### Status: ✅ Implementation Complete
+- Step 1: Upscale trigger - DONE
+- Step 2: Auto extend after upscale - DONE  
+- Step 3: Auto-submit remix modal - DONE
+- Testing: Pending user verification
+
+---
+
+## Previous Tasks
+
+[2024-05-09] Task: Investigate NullReferenceException in TaskService.SubmitSeed
+- Analyze stack trace and identify error origin in `TaskService.SubmitSeed` line 1138.
+- Hypothesize cause: `TaskInfo` object or its critical properties (e.g., `Id`, `Nonce`, `BotType`) are null.
+- Suggest debugging steps: Review code at error location, trace `TaskInfo` object creation and population from `TaskController.ImageSeed`.
+- Status: Initial analysis complete, pending user code review.
+
+# Learned Knowledge
+## Technical Knowledge
+[2024-05-04] When dealing with banned words in prompts, removing them instead of blocking the entire prompt can improve user experience while still maintaining content moderation.
+
+[2024-05-04] In Discord bot integration, it's important to handle message updates and interactions separately to avoid race conditions.
+
+[2024-05-06] When processing AI-reviewed prompts, URLs and parameters should be preserved as-is to avoid breaking functionality.
+
+[2024-11-21] For video extend operations in Discord:
+- Partner/Official accounts can directly call extend buttons
+- Discord accounts need a three-step process: upscale → extend → modal submit
+- Use task properties to track multi-step operations
+- RemixAutoSubmit flag enables automatic modal submission
+
+## Implementation History
+[2024-05-04] Fixed the banned word handling to remove banned words instead of throwing exceptions.
+[2024-05-06] Fixed AI review processing to avoid modifying URLs and parameters which could break functionality.
+
+[2024-11-21] Implemented video extend flow for Discord accounts with automatic upscale, extend trigger, and remix modal submission.
+
+# Core Principles
+
+## 1. Code Quality
+- Write clean, maintainable C# code following .NET conventions
+- Use async/await patterns for I/O operations
+- Implement proper error handling and logging
+- Add XML documentation comments for public APIs
+
+## 2. Architecture
+- Follow the existing layered architecture (API → Infrastructure → Base)
+- Use dependency injection for services
+- Implement proper separation of concerns
+- Use message handlers for Discord event processing
+
+## 3. Communication Style
+- Support bilingual interaction (English/Chinese)
+- Ensure accuracy of technical terminology
+
+## 4. Thinking Process
+- Apply Chain-of-Thought (CoT) reasoning
+- Display dialectical analysis
+- Format thought processes within ```thinking``` code blocks
+- Include step-by-step reasoning
+
+## 5. Response Protocol
+```markdown
+# 分析步骤
+1. 在代码块中显示思维过程
+2. 提供详细推理
+3. 用中文呈现结论
+```
+

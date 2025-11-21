@@ -272,6 +272,11 @@ namespace Midjourney.Base.Models
         public bool IsPartner { get; set; }
 
         /// <summary>
+        /// 是否已经重试 AI 审核
+        /// </summary>
+        public bool HasAIReviewRetried { get; set; }
+
+        /// <summary>
         /// 是否为悠船放松模式任务
         /// </summary>
         public bool IsPartnerRelax => IsPartner && Mode == GenerationSpeedMode.RELAX;
@@ -522,6 +527,12 @@ namespace Midjourney.Base.Models
         public int? FrameCount { get; set; }
 
         /// <summary>
+        /// 视频URL。
+        /// </summary>
+        [Column(StringLength = 1024)]
+        public string VideoUrl { get; set; }
+
+        /// <summary>
         /// 视频列表
         /// </summary>
         [JsonMap]
@@ -712,22 +723,38 @@ namespace Midjourney.Base.Models
 
         private void UpdateImageUrls(string finalPrompt)
         {
-            List<TaskInfoImageUrl> urls = null;
-
             if (IsVideoResult())
             {
-                urls = BuildVideoImageUrls(finalPrompt);
+                // 视频结果：设置 VideoUrl 和 VideoUrls
+                var videoUrls = BuildVideoUrls(finalPrompt);
+                VideoUrls = videoUrls != null && videoUrls.Count > 0 ? videoUrls : null;
+                
+                // 同时设置 VideoUrl 和 ImageUrls（兼容性）
+                VideoUrl = ImageUrl;
+                if (VideoUrls != null && VideoUrls.Count > 0)
+                {
+                    ImageUrls = VideoUrls.Select(v => new TaskInfoImageUrl(v.Url)).ToList();
+                }
             }
-            else if (HasFullUpscaleButtons())
+            else
             {
-                urls = BuildGridImageUrls();
-            }
-            else if (!string.IsNullOrWhiteSpace(ImageUrl))
-            {
-                urls = new List<TaskInfoImageUrl> { new TaskInfoImageUrl(TransformUrl(ImageUrl)) };
-            }
+                // 图片结果：设置 ImageUrl 和 ImageUrls
+                List<TaskInfoImageUrl> urls = null;
+                
+                if (HasFullUpscaleButtons())
+                {
+                    urls = BuildGridImageUrls();
+                }
+                else if (!string.IsNullOrWhiteSpace(ImageUrl))
+                {
+                    urls = new List<TaskInfoImageUrl> { new TaskInfoImageUrl(TransformUrl(ImageUrl)) };
+                }
 
-            ImageUrls = urls != null && urls.Count > 0 ? urls : null;
+                ImageUrls = urls != null && urls.Count > 0 ? urls : null;
+                
+                // 图片任务不设置 VideoUrls
+                VideoUrls = null;
+            }
         }
 
         private bool IsVideoResult()
@@ -745,9 +772,9 @@ namespace Midjourney.Base.Models
             return !string.IsNullOrWhiteSpace(ImageUrl) && ImageUrl.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
         }
 
-        private List<TaskInfoImageUrl> BuildVideoImageUrls(string finalPrompt)
+        private List<TaskInfoVideoUrl> BuildVideoUrls(string finalPrompt)
         {
-            var urls = new List<TaskInfoImageUrl>();
+            var urls = new List<TaskInfoVideoUrl>();
 
             if (!string.IsNullOrWhiteSpace(JobId))
             {
@@ -755,7 +782,7 @@ namespace Midjourney.Base.Models
                 for (int i = 0; i < count; i++)
                 {
                     var videoUrl = $"https://{MIDJOURNEY_CDN}/video/{JobId}/0_{i}.mp4";
-                    urls.Add(new TaskInfoImageUrl(videoUrl));
+                    urls.Add(new TaskInfoVideoUrl(videoUrl));
                 }
 
                 return urls;
@@ -763,7 +790,7 @@ namespace Midjourney.Base.Models
 
             if (!string.IsNullOrWhiteSpace(ImageUrl))
             {
-                urls.Add(new TaskInfoImageUrl(TransformUrl(ImageUrl)));
+                urls.Add(new TaskInfoVideoUrl(TransformUrl(ImageUrl)));
             }
 
             return urls;

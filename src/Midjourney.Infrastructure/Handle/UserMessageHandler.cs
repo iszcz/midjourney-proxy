@@ -195,8 +195,169 @@ namespace Midjourney.Infrastructure.Handle
             task.ImageUrl = imageUrl;
             task.JobId = messageHash;
 
-            FinishTask(task, message);
-            task.Awake();
+            // 检查是否是视频扩展的第一步（放大）
+            var isVideoExtend = !string.IsNullOrWhiteSpace(task.GetProperty<string>(Constants.TASK_PROPERTY_VIDEO_EXTEND_TARGET_TASK_ID, default));
+            
+            if (!isVideoExtend)
+            {
+                // 普通任务，直接完成
+                FinishTask(task, message);
+                task.Awake();
+            }
+            else
+            {
+                // 视频扩展任务，需要先设置 Buttons 等属性，然后触发扩展操作
+                
+                // 🎯 关键：先设置 Buttons 和其他属性（从 FinishTask 中提取）
+                var image = message.Attachments?.FirstOrDefault();
+                if (image != null)
+                {
+                    task.Width = image.Width;
+                    task.Height = image.Height;
+                    task.Url = image.Url;
+                    task.ProxyUrl = image.ProxyUrl;
+                    task.Size = image.Size;
+                    task.ContentType = image.ContentType;
+                }
+
+                task.SetProperty(Constants.TASK_PROPERTY_MESSAGE_ID, message.Id);
+                task.SetProperty(Constants.TASK_PROPERTY_FLAGS, Convert.ToInt32(message.Flags));
+
+                // ✅ 设置 Buttons（这是关键！）
+                task.Buttons = message.Components.SelectMany(x => x.Components)
+                    .Select(btn =>
+                    {
+                        return new CustomComponentModel
+                        {
+                            CustomId = btn.CustomId ?? string.Empty,
+                            Emoji = btn.Emoji?.Name ?? string.Empty,
+                            Label = btn.Label ?? string.Empty,
+                            Style = (int?)btn.Style ?? 0,
+                            Type = (int?)btn.Type ?? 0,
+                        };
+                    }).Where(c => c != null && !string.IsNullOrWhiteSpace(c.CustomId)).ToList();
+
+                task.Status = TaskStatus.IN_PROGRESS;
+                task.Description = "/video extend";
+                task.Progress = "0%";
+                
+                Log.Information("视频放大完成（FindAndFinishImageTask），准备触发扩展操作: TaskId={TaskId}, ButtonsCount={ButtonsCount}", 
+                    task.Id, task.Buttons?.Count ?? 0);
+                
+                // 触发第二步（扩展）
+                CheckAndTriggerVideoExtend(instance, task, messageHash);
+            }
+        }
+
+        /// <summary>
+        /// 检查并触发视频扩展操作
+        /// </summary>
+        protected void CheckAndTriggerVideoExtend(DiscordInstance instance, TaskInfo upscaleTask, string messageHash)
+        {
+            try
+            {
+                // 检查任务是否有视频扩展标记
+                var videoExtendTargetTaskId = upscaleTask.GetProperty<string>(Constants.TASK_PROPERTY_VIDEO_EXTEND_TARGET_TASK_ID, default);
+                if (string.IsNullOrWhiteSpace(videoExtendTargetTaskId))
+                {
+                    return;
+                }
+
+                // 获取扩展相关参数
+                var extendPrompt = upscaleTask.GetProperty<string>(Constants.TASK_PROPERTY_VIDEO_EXTEND_PROMPT, default);
+                var extendMotion = upscaleTask.GetProperty<string>(Constants.TASK_PROPERTY_VIDEO_EXTEND_MOTION, default);
+                var extendIndex = upscaleTask.GetProperty<int>(Constants.TASK_PROPERTY_VIDEO_EXTEND_INDEX, 1);
+
+                if (string.IsNullOrWhiteSpace(extendMotion))
+                {
+                    extendMotion = "high";
+                }
+
+                Log.Information("🎬 视频放大完成，准备触发扩展操作: UpscaleTaskId={UpscaleTaskId}, TargetTaskId={TargetTaskId}, Motion={Motion}, Index={Index}, ButtonsCount={ButtonsCount}", 
+                    upscaleTask.Id, videoExtendTargetTaskId, extendMotion, extendIndex, upscaleTask.Buttons?.Count ?? 0);
+
+                // 🎯 关键改进：从 Buttons 中查找正确的 extend customId，而不是自己构建
+                // 因为 upscale 后的 JobId 可能不是正确的 hash 值
+                var extendButton = upscaleTask.Buttons?.FirstOrDefault(x => 
+                    x.CustomId?.Contains($"animate_{extendMotion}_extend") == true);
+
+                if (extendButton == null || string.IsNullOrWhiteSpace(extendButton.CustomId))
+                {
+                    Log.Warning("❌ 找不到 extend 按钮: UpscaleTaskId={TaskId}, Motion={Motion}, Buttons={@Buttons}", 
+                        upscaleTask.Id, extendMotion, upscaleTask.Buttons);
+                    
+                    // 标记任务失败
+                    upscaleTask.Status = TaskStatus.FAILURE;
+                    upscaleTask.FailReason = $"找不到 extend 按钮 (motion: {extendMotion})";
+                    DbHelper.Instance.TaskStore.Update(upscaleTask);
+                    upscaleTask.Awake();
+                    return;
+                }
+
+                var extendCustomId = extendButton.CustomId;
+
+                // 异步触发扩展操作
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        // 等待 1.5 秒，确保消息已完全处理
+                        await Task.Delay(1500);
+
+                        // 创建一个新的 nonce 用于 extend 操作
+                        var extendNonce = SnowFlake.NextId();
+
+                        // 更新当前任务（upscaleTask 就是用户看到的任务）
+                        upscaleTask.Nonce = extendNonce;
+                        upscaleTask.Status = TaskStatus.SUBMITTED;
+                        upscaleTask.Action = TaskAction.VIDEO;
+                        upscaleTask.Description = "/video extend";
+                        upscaleTask.Progress = "0%";
+                        upscaleTask.PromptEn = extendPrompt;
+                        upscaleTask.RemixAutoSubmit = instance.Account.RemixAutoSubmit && (instance.Account.MjRemixOn || instance.Account.NijiRemixOn);
+
+                        upscaleTask.SetProperty(Constants.TASK_PROPERTY_CUSTOM_ID, extendCustomId);
+                        upscaleTask.SetProperty(Constants.TASK_PROPERTY_NONCE, extendNonce);
+                        upscaleTask.SetProperty(Constants.TASK_PROPERTY_MESSAGE_ID, upscaleTask.MessageId);
+                        upscaleTask.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_PROMPT, extendPrompt);
+
+                        // 清除 video extend 标记，避免任务完成时再次触发
+                        upscaleTask.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_TARGET_TASK_ID, null);
+                        upscaleTask.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_MOTION, null);
+                        upscaleTask.SetProperty(Constants.TASK_PROPERTY_VIDEO_EXTEND_INDEX, null);
+
+                        // 如果开启了 remix 自动提交，标记任务状态
+                        if (upscaleTask.RemixAutoSubmit)
+                        {
+                            upscaleTask.RemixModaling = true;
+                        }
+
+                        // 调用 Action 接口触发扩展
+                        var result = await instance.ActionAsync(upscaleTask.MessageId, extendCustomId,
+                            upscaleTask.GetProperty<int>(Constants.TASK_PROPERTY_FLAGS, 0),
+                            extendNonce, upscaleTask);
+
+                        if (result.Code == ReturnCode.SUCCESS)
+                        {
+                            Log.Information("视频扩展 extend action 触发成功: TaskId={TaskId}", upscaleTask.Id);
+                        }
+                        else
+                        {
+                            Log.Error("视频扩展 extend action 触发失败: TaskId={TaskId}, Error={Error}", 
+                                upscaleTask.Id, result.Description);
+                            upscaleTask.Fail(result.Description);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "执行视频扩展操作时发生异常: UpscaleTaskId={UpscaleTaskId}", upscaleTask.Id);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "检查视频扩展时发生异常: UpscaleTaskId={UpscaleTaskId}", upscaleTask.Id);
+            }
         }
 
         protected void FinishTask(TaskInfo task, EventData message)

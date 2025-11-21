@@ -1314,12 +1314,96 @@ namespace Midjourney.Infrastructure
                                         }
                                     }
 
+                                    // 🔍 调试：打印所有相关状态
+                                    if (messageType == MessageType.INTERACTION_SUCCESS)
+                                    {
+                                        Log.Information("🔍 收到 INTERACTION_SUCCESS: TaskId={TaskId}, RemixAutoSubmit={RemixAutoSubmit}, RemixModaling={RemixModaling}, Action={Action}, CustomId={CustomId}", 
+                                            task.Id, task.RemixAutoSubmit, task.RemixModaling, task.Action, 
+                                            task.GetProperty<string>(Constants.TASK_PROPERTY_CUSTOM_ID, "N/A"));
+                                    }
+
                                     // 如果任务是 remix 自动提交任务
                                     if (task.RemixAutoSubmit
                                         && task.RemixModaling == true
                                         && messageType == MessageType.INTERACTION_SUCCESS)
                                     {
+                                        Log.Information("✅ 满足自动提交条件: TaskId={TaskId}", task.Id);
                                         task.RemixModalMessageId = id;
+
+                                        // 如果是视频扩展任务，自动提交 modal
+                                        if (task.Action == TaskAction.VIDEO)
+                                        {
+                                            var customId = task.GetProperty<string>(Constants.TASK_PROPERTY_CUSTOM_ID, default);
+                                            if (!string.IsNullOrWhiteSpace(customId) && customId.Contains("animate_") && customId.Contains("_extend"))
+                                            {
+                                                _ = Task.Run(async () =>
+                                                {
+                                                    try
+                                                    {
+                                                        // 等待 1.5 秒确保 modal 完全准备好
+                                                        await Task.Delay(1500);
+
+                                                        var extendPrompt = task.GetProperty<string>(Constants.TASK_PROPERTY_VIDEO_EXTEND_PROMPT, default);
+                                                        if (string.IsNullOrWhiteSpace(extendPrompt))
+                                                        {
+                                                            extendPrompt = task.PromptEn;
+                                                        }
+
+                                                        task.RemixModaling = false;
+
+                                                        // video extend 使用 AnimateModal
+                                                        // Button customId 格式: MJ::JOB::animate_high_extend::1::107ad5a0-a4f6-4d09-a173-6bfd1a0d83cd::SOLO
+                                                        // Modal customId 格式: MJ::AnimateModal::107ad5a0-a4f6-4d09-a173-6bfd1a0d83cd::1::high::1
+                                                        var modal = $"MJ::AnimateModal::prompt";
+                                                        
+                                                        // 从 customId 中提取参数
+                                                        var parts = customId.Split(new[] { "::" }, StringSplitOptions.None);
+                                                        if (parts.Length >= 5)
+                                                        {
+                                                            var action = parts[2];
+                                                            var index = parts[3];
+                                                            var jobId = parts[4];
+                                                            var motion = action.Contains("high") ? "high" : "low";
+                                                            
+                                                            // 构建 modalCustomId
+                                                            var modalCustomId = $"MJ::AnimateModal::{jobId}::{index}::{motion}::1";
+
+                                                            var nonce = SnowFlake.NextId();
+                                                            task.Nonce = nonce;
+                                                            task.SetProperty(Constants.TASK_PROPERTY_NONCE, nonce);
+
+                                                            var result = await _discordInstance.RemixAsync(task, TaskAction.VIDEO, id, modal,
+                                                                modalCustomId, extendPrompt, nonce, task.RealBotType ?? task.BotType);
+
+                                                            if (result.Code == ReturnCode.SUCCESS)
+                                                            {
+                                                                Log.Information("视频扩展 Modal 自动提交成功: TaskId={TaskId}", task.Id);
+                                                                
+                                                                task.Status = TaskStatus.SUBMITTED;
+                                                                task.Description = "/video extend";
+                                                                task.Progress = "0%";
+                                                            }
+                                                            else
+                                                            {
+                                                                Log.Error("视频扩展 Modal 自动提交失败: TaskId={TaskId}, Error={Error}", 
+                                                                    task.Id, result.Description);
+                                                                task.Fail(result.Description);
+                                                            }
+                                                        }
+                                                        else
+                                                        {
+                                                            Log.Error("无法解析 video extend customId: TaskId={TaskId}, CustomId={CustomId}", 
+                                                                task.Id, customId);
+                                                            task.Fail($"无法解析 customId: {customId}");
+                                                        }
+                                                    }
+                                                    catch (Exception ex)
+                                                    {
+                                                        Log.Error(ex, "自动提交视频扩展 Modal 时发生异常: TaskId={TaskId}", task.Id);
+                                                    }
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                             }

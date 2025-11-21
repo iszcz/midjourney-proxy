@@ -1415,6 +1415,11 @@ namespace Midjourney.Infrastructure.LoadBalancer
             obj["data"]["components"][0]["components"][0]["value"] = prompt;
             paramsStr = obj.ToString();
 
+            // 🔍 打印实际提交的请求内容（用于调试）
+            _logger.Information("📤 RemixAsync 请求内容: {RequestBody}", paramsStr);
+            _logger.Information("📋 参数详情: MessageId={MessageId}, CustomId={CustomId}, Modal={Modal}, Prompt={Prompt}, Nonce={Nonce}", 
+                messageId, customId, modal, prompt, nonce);
+
             return await PostJsonAndCheckStatusAsync(paramsStr);
         }
 
