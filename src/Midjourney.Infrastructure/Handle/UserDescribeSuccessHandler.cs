@@ -22,6 +22,7 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited. 
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
+using Midjourney.Base.Services;
 using Midjourney.Infrastructure.LoadBalancer;
 using Serilog;
 
@@ -32,9 +33,12 @@ namespace Midjourney.Infrastructure.Handle
     /// </summary>
     public class UserDescribeSuccessHandler : UserMessageHandler
     {
-        public UserDescribeSuccessHandler(DiscordLoadBalancer discordLoadBalancer, DiscordHelper discordHelper)
+        private readonly ITranslateService _translateService;
+
+        public UserDescribeSuccessHandler(DiscordLoadBalancer discordLoadBalancer, DiscordHelper discordHelper, ITranslateService translateService)
         : base(discordLoadBalancer, discordHelper)
         {
+            _translateService = translateService;
         }
 
         public override int Order() => 88888;
@@ -80,6 +84,22 @@ namespace Midjourney.Infrastructure.Handle
                     var messageHash = discordHelper.GetMessageHash(imageUrl);
 
                     var finalPrompt = message.Embeds.First().Description;
+
+                    // 如果 language 参数为 zh_cn 或 zh，且开启了翻译功能，则翻译 finalPrompt
+                    var language = task.GetProperty<string>(Constants.TASK_PROPERTY_LANGUAGE, "");
+                    if ((language == "zh_cn" || language == "zh") && 
+                        GlobalConfiguration.Setting.TranslateWay != TranslateWay.NULL && 
+                        !string.IsNullOrWhiteSpace(finalPrompt))
+                    {
+                        try
+                        {
+                            finalPrompt = _translateService.TranslateToChinese(finalPrompt);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Warning(ex, "翻译 finalPrompt 失败");
+                        }
+                    }
 
                     task.PromptEn = finalPrompt;
                     task.MessageId = msgId;

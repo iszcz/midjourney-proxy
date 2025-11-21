@@ -170,6 +170,11 @@ namespace Midjourney.Base.Data
         /// </summary>
         public const string TASK_PROPERTY_ACTION_INDEX = "action_index";
 
+        /// <summary>
+        /// 语言参数，用于指定返回的语言
+        /// </summary>
+        public const string TASK_PROPERTY_LANGUAGE = "language";
+
         // 任务扩展属性 end
 
         /// <summary>

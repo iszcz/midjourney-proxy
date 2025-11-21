@@ -492,6 +492,12 @@ namespace Midjourney.API.Controllers
             string taskFileName = $"{task.Id}.{FileFetchHelper.GuessFileSuffix(dataUrl.MimeType, dataUrl.Url)}";
             task.Description = $"/describe {taskFileName}";
 
+            // 保存 language 参数
+            if (!string.IsNullOrWhiteSpace(describeDTO.Language))
+            {
+                task.SetProperty(Constants.TASK_PROPERTY_LANGUAGE, describeDTO.Language);
+            }
+
             NewTaskDoFilter(task, describeDTO.AccountFilter);
 
             return Ok(_taskService.SubmitDescribe(task, dataUrl));

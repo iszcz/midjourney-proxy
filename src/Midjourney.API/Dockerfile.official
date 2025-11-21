@@ -42,7 +42,7 @@ RUN apt-get update && apt-get install -y \
 
 USER $APP_UID
 WORKDIR /app
-EXPOSE 8080
+EXPOSE 8186
 
 
 # 此阶段用于生成服务项目

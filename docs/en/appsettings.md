@@ -166,6 +166,6 @@
     }
   },
   "AllowedHosts": "*",
-  "urls": "http://*:8080" // Default port
+  "urls": "http://*:8186" // Default port
 }
 ```

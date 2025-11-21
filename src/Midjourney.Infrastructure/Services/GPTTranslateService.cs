@@ -126,6 +126,62 @@ namespace Midjourney.Infrastructure.Services
             return prompt;
         }
 
+        public string TranslateToChinese(string prompt)
+        {
+            if (string.IsNullOrWhiteSpace(_apiKey) || string.IsNullOrWhiteSpace(_apiUrl))
+            {
+                return prompt;
+            }
+
+            if (string.IsNullOrWhiteSpace(prompt))
+            {
+                return prompt;
+            }
+
+            var requestBody = new
+            {
+                model = _model,
+                messages = new[]
+                {
+                    new { role = "system", content = "把英文翻译成中文" },
+                    new { role = "user", content = prompt }
+                },
+                max_tokens = _maxTokens,
+                temperature = _temperature
+            };
+
+            try
+            {
+                var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+                var response = _httpClient.PostAsync(_apiUrl, content).Result;
+
+                if (!response.IsSuccessStatusCode || string.IsNullOrWhiteSpace(response.Content.ReadAsStringAsync().Result))
+                {
+                    throw new InvalidOperationException($"{response.StatusCode} - {response.Content.ReadAsStringAsync().Result}");
+                }
+
+                var result = JsonDocument.Parse(response.Content.ReadAsStringAsync().Result);
+                var choices = result.RootElement.GetProperty("choices").EnumerateArray();
+                var translatedText = choices.First().GetProperty("message").GetProperty("content").GetString();
+
+                return translatedText?.Trim() ?? prompt;
+            }
+            catch (HttpRequestException e)
+            {
+                Log.Warning(e, "HTTP request failed");
+            }
+            catch (JsonException e)
+            {
+                Log.Warning(e, "Failed to parse JSON response");
+            }
+            catch (Exception e)
+            {
+                Log.Warning(e, "Failed to call OpenAI Translate");
+            }
+
+            return prompt;
+        }
+
         public bool ContainsChinese(string prompt)
         {
             // 匹配基本汉字区、扩展A区和部分扩展B区

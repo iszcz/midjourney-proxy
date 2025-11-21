@@ -52,5 +52,10 @@ namespace Midjourney.Base.Dto
         /// 账号过滤支持
         /// </summary>
         public AccountFilter AccountFilter { get; set; }
+
+        /// <summary>
+        /// 语言参数，用于指定返回的语言。如果为 zh_cn 或 zh，且开启了翻译功能，则会在任务完成时将提示词翻译为中文
+        /// </summary>
+        public string Language { get; set; }
     }
 }
