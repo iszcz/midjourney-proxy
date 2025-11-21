@@ -41,8 +41,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.OpenApi.Models;
 using Midjourney.Infrastructure.Services;
-using Midjourney.License;
-using Midjourney.License.YouChuan;
 using MongoDB.Driver;
 using Serilog;
 
@@ -178,8 +176,6 @@ namespace Midjourney.API
 
             // 注册 IHttpClientFactory 复用 HttpClient 实例
             services.AddHttpClient();
-            services.AddYouChuanHttpClient();
-
             // 注册升级服务
             services.TryAddSingleton<IUpgradeService, UpgradeService>();
 

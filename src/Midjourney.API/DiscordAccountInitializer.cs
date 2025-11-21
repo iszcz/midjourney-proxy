@@ -28,7 +28,6 @@ using LiteDB;
 using Microsoft.Extensions.Caching.Memory;
 using Midjourney.Infrastructure.LoadBalancer;
 using Midjourney.Infrastructure.Services;
-using Midjourney.License;
 using MongoDB.Driver;
 using Newtonsoft.Json.Linq;
 using RestSharp;
@@ -165,19 +164,6 @@ namespace Midjourney.API
                     {
                         // 后台更新检查
                         _ = UpgradeCheck();
-                    }
-
-                    // 官方下载下载器
-                    if (setting.EnableOfficial)
-                    {
-                        try
-                        {
-                            _ = LicenseKeyHelper.InitDonwloader();
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.Error(ex, "初始化官方业务异常");
-                        }
                     }
 
                     // 启用视频功能，视频下载器
@@ -498,9 +484,6 @@ namespace Midjourney.API
 
                         // 用户绘图统计
                         UserStat();
-
-                        // 验证许可
-                        await LicenseKeyHelper.Validate();
 
                         // 初始化
                         await Initialize();

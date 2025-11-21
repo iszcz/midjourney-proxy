@@ -22,7 +22,6 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited.
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
-using Midjourney.License;
 using Serilog;
 using Serilog.Core;
 using Serilog.Debugging;
@@ -32,35 +31,32 @@ namespace Midjourney.API
 {
     public class Program
     {
-        // ÉùÃ÷Ò»¸öÈ«¾ÖµÄÈÕÖ¾¼¶±ğ¿ª¹Ø
+        // ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½È«ï¿½Öµï¿½ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ğ¿ª¹ï¿½
         public static LoggingLevelSwitch LogLevelSwitch { get; private set; } = new LoggingLevelSwitch();
 
         public static void Main(string[] args)
         {
             try
             {
-                // ´´½¨²¢ÔËĞĞÖ÷»ú
+                // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 var host = CreateHostBuilder(args).Build();
 
-                // È·±£ÔÚÓ¦ÓÃ³ÌĞò½áÊøÊ±¹Ø±Õ²¢Ë¢ĞÂÈÕÖ¾
+                // È·ï¿½ï¿½ï¿½ï¿½Ó¦ï¿½Ã³ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½Ø±Õ²ï¿½Ë¢ï¿½ï¿½ï¿½ï¿½Ö¾
                 AppDomain.CurrentDomain.ProcessExit += (s, e) => Log.CloseAndFlush();
 
-                // ¼ÇÂ¼µ±Ç°Ä¿Â¼
+                // ï¿½ï¿½Â¼ï¿½ï¿½Ç°Ä¿Â¼
                 Log.Information($"Current directory: {Directory.GetCurrentDirectory()}");
-
-                // »úÆ÷±êÊ¶
-                LicenseKeyHelper.Startup();
 
                 host.Run();
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "Ó¦ÓÃ³ÌĞòÆô¶¯Ê§°Ü");
+                Log.Error(ex, "Ó¦ï¿½Ã³ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½");
             }
             finally
             {
-                // È·±£ÈÕÖ¾±»Ë¢ĞÂºÍ¹Ø±Õ
-                Log.Information("Ó¦ÓÃ³ÌĞò¼´½«¹Ø±Õ");
+                // È·ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½Ë¢ï¿½ÂºÍ¹Ø±ï¿½
+                Log.Information("Ó¦ï¿½Ã³ï¿½ï¿½ò¼´½ï¿½ï¿½Ø±ï¿½");
                 Log.CloseAndFlush();
             }
         }
@@ -69,15 +65,15 @@ namespace Midjourney.API
           Host.CreateDefaultBuilder(args)
             .ConfigureAppConfiguration((hostingContext, config) =>
             {
-                // ÅäÖÃ¶ÁÈ¡Íê³Éºó£¬¿ÉÒÔÔÚÖ÷»úÅäÖÃÍê³ÉÇ°·ÃÎÊÅäÖÃ
+                // ï¿½ï¿½ï¿½Ã¶ï¿½È¡ï¿½ï¿½Éºó£¬¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç°ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 var configuration = config.Build();
 
-                // ¿ÉÒÔÔÚÕâÀïµ÷ÕûÈÕÖ¾Æ÷£¬Ê¹ÓÃÅäÖÃĞÅÏ¢
+                // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½Ê¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï¢
                 ConfigureInitialLogger(configuration, hostingContext.HostingEnvironment.IsDevelopment());
             })
             .ConfigureLogging((hostContext, loggingBuilder) =>
             {
-                // ½ûÓÃÄ¬ÈÏÈÕÖ¾Ìá¹©³ÌĞò£¬ÍêÈ«ÒÀÀµ Serilog
+                // ï¿½ï¿½ï¿½ï¿½Ä¬ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½á¹©ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½È«ï¿½ï¿½ï¿½ï¿½ Serilog
                 loggingBuilder.ClearProviders();
             })
             .UseSerilog()
@@ -87,26 +83,26 @@ namespace Midjourney.API
             });
 
         /// <summary>
-        /// ¶ÁÈ¡ÅäÖÃ²¢¸üĞÂ³õÊ¼ÈÕÖ¾Æ÷
+        /// ï¿½ï¿½È¡ï¿½ï¿½ï¿½Ã²ï¿½ï¿½ï¿½ï¿½Â³ï¿½Ê¼ï¿½ï¿½Ö¾ï¿½ï¿½
         /// </summary>
         /// <param name="configuration"></param>
         /// <param name="isDevelopment"></param>
         private static void ConfigureInitialLogger(IConfiguration configuration, bool isDevelopment)
         {
-            // ÉèÖÃ³õÊ¼ÈÕÖ¾¼¶±ğ
+            // ï¿½ï¿½ï¿½Ã³ï¿½Ê¼ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½
             LogLevelSwitch.MinimumLevel = isDevelopment ? LogEventLevel.Debug : LogEventLevel.Information;
 
-            // »ù±¾ÈÕÖ¾ÅäÖÃ
+            // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½
             //var loggerConfiguration = new LoggerConfiguration()
             //      .ReadFrom.Configuration(configuration)
             //      .Enrich.FromLogContext();
 
-            // Ğ´ËÀÅäÖÃ£¬¶ø²»ÊÇ¶ÁÈ¡ÅäÖÃÎÄ¼ş
-            // µ¥ÎÄ¼ş×î´ó 10MB
+            // Ğ´ï¿½ï¿½ï¿½ï¿½ï¿½Ã£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ç¶ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½Ä¼ï¿½
+            // ï¿½ï¿½ï¿½Ä¼ï¿½ï¿½ï¿½ï¿½ 10MB
             var fileSizeLimitBytes = 10 * 1024 * 1024;
             var loggerConfiguration = new LoggerConfiguration()
                 //.MinimumLevel.Information()
-                .MinimumLevel.ControlledBy(LogLevelSwitch) // Ê¹ÓÃ LoggingLevelSwitch ¿ØÖÆÈÕÖ¾¼¶±ğ
+                .MinimumLevel.ControlledBy(LogLevelSwitch) // Ê¹ï¿½ï¿½ LoggingLevelSwitch ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½
                 .MinimumLevel.Override("Default", LogEventLevel.Warning)
                 .MinimumLevel.Override("System", LogEventLevel.Warning)
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
@@ -118,13 +114,13 @@ namespace Midjourney.API
                     rollOnFileSizeLimit: true,
                     retainedFileCountLimit: 31);
 
-            // ¿ª·¢»·¾³ÌØ¶¨ÅäÖÃ
+            // ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø¶ï¿½ï¿½ï¿½ï¿½ï¿½
             if (isDevelopment)
             {
                 //loggerConfiguration.MinimumLevel.Debug();
 
-                //// Èç¹ûÅäÖÃÖĞÃ»ÓĞÉèÖÃ¿ØÖÆÌ¨ÈÕÖ¾£¬ÔòÌí¼Ó
-                //// ·ñÔò£¬²»ÒªÔÚ´úÂëÖĞÌí¼Ó£¬±ÜÃâÖØ¸´
+                //// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ã»ï¿½ï¿½ï¿½ï¿½ï¿½Ã¿ï¿½ï¿½ï¿½Ì¨ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
+                //// ï¿½ï¿½ï¿½ò£¬²ï¿½Òªï¿½Ú´ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ø¸ï¿½
                 //bool hasConsoleInConfig = configuration
                 //    .GetSection("Serilog:WriteTo")
                 //    .GetChildren()
@@ -137,11 +133,11 @@ namespace Midjourney.API
 
                 //loggerConfiguration.WriteTo.Console();
 
-                // ÆôÓÃ Serilog ×ÔÎÒÕï¶Ï
+                // ï¿½ï¿½ï¿½ï¿½ Serilog ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
                 SelfLog.Enable(Console.Error);
             }
 
-            // ËùÓĞ»·¾³¶¼¼ÇÂ¼´íÎóµ½µ¥¶ÀÎÄ¼ş
+            // ï¿½ï¿½ï¿½Ğ»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Â¼ï¿½ï¿½ï¿½óµ½µï¿½ï¿½ï¿½ï¿½Ä¼ï¿½
             loggerConfiguration.WriteTo.Logger(lc => lc
                 .Filter.ByIncludingOnly(evt => evt.Level >= LogEventLevel.Error)
                 .WriteTo.File("logs/error.txt",
@@ -154,14 +150,14 @@ namespace Midjourney.API
         }
 
         /// <summary>
-        /// ÉèÖÃÈÕÖ¾¼¶±ğ
+        /// ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½
         /// </summary>
         /// <param name="level"></param>
         public static void SetLogLevel(LogEventLevel level)
         {
             LogLevelSwitch.MinimumLevel = level;
 
-            Log.Write(level, "ÈÕÖ¾¼¶±ğÒÑÉèÖÃÎª: {Level}", level);
+            Log.Write(level, "ï¿½ï¿½Ö¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îª: {Level}", level);
         }
 
     }

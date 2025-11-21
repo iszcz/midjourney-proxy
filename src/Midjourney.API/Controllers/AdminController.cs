@@ -34,7 +34,6 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
 using Midjourney.Infrastructure.LoadBalancer;
 using Midjourney.Infrastructure.Services;
-using Midjourney.License;
 using MongoDB.Driver;
 using Serilog;
 
@@ -2286,24 +2285,6 @@ namespace Midjourney.API.Controllers
             if (_isAnonymous)
             {
                 return Result.Fail("演示模式，禁止操作");
-            }
-
-            try
-            {
-                // 保存时验证授权
-                var res = await LicenseKeyHelper.ValidateSync(setting.LicenseKey, setting.EnableYouChuan, setting.EnableOfficial);
-                if (!res.IsAuthorized)
-                {
-                    return Result.Fail("授权验证失败，请检查授权码是否正确，如果没有授权码，请输入默认授权码：trueai.org");
-                }
-
-                setting.PrivateFeatures = res.Features ?? [];
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "授权验证失败");
-
-                return Result.Fail("授权验证失败，请检查授权码是否正确，如果没有授权码，请输入默认授权码：trueai.org");
             }
 
             // 如果启用了 redis 则验证

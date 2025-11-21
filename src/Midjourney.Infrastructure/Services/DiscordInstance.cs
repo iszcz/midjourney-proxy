@@ -29,8 +29,6 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Caching.Memory;
-using Midjourney.License;
-using Midjourney.License.YouChuan;
 using Newtonsoft.Json.Linq;
 using Serilog;
 
