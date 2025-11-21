@@ -22,6 +22,7 @@
 // invasion of privacy, or any other unlawful purposes is strictly prohibited.
 // Violation of these terms may result in termination of the license and may subject the violator to legal action.
 
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using FreeSql.DataAnnotations;
@@ -72,6 +73,18 @@ namespace Midjourney.Base.Models
         /// 版本号匹配正则表达式实例。
         /// </summary>
         private static readonly Regex VersionRegex = new Regex(VERSION_PATTERN, RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// 放大按钮 CustomId 匹配正则。
+        /// </summary>
+        private static readonly Regex UpscaleCustomIdRegex = new Regex(@"MJ::JOB::upsample(?:::[^:]+)*::(?<index>\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        /// <summary>
+        /// 视频批次数量匹配正则。
+        /// </summary>
+        private static readonly Regex BatchSizeRegex = new Regex(@"--bs\s+(?<value>\d+)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+        private const int DefaultVideoBatchSize = 4;
 
         public TaskInfo()
         {
@@ -645,6 +658,9 @@ namespace Midjourney.Base.Models
 
             // 根据最终提示词更新速度模式
             var finalPrompt = GetProperty(Constants.TASK_PROPERTY_FINAL_PROMPT, "");
+
+            UpdateImageUrls(finalPrompt);
+
             if (!string.IsNullOrWhiteSpace(finalPrompt))
             {
                 // 解析提示词
@@ -692,6 +708,168 @@ namespace Midjourney.Base.Models
             FinishTime = DateTimeOffset.Now.ToUnixTimeMilliseconds();
             Status = TaskStatus.SUCCESS;
             Progress = "100%";
+        }
+
+        private void UpdateImageUrls(string finalPrompt)
+        {
+            List<TaskInfoImageUrl> urls = null;
+
+            if (IsVideoResult())
+            {
+                urls = BuildVideoImageUrls(finalPrompt);
+            }
+            else if (HasFullUpscaleButtons())
+            {
+                urls = BuildGridImageUrls();
+            }
+            else if (!string.IsNullOrWhiteSpace(ImageUrl))
+            {
+                urls = new List<TaskInfoImageUrl> { new TaskInfoImageUrl(TransformUrl(ImageUrl)) };
+            }
+
+            ImageUrls = urls != null && urls.Count > 0 ? urls : null;
+        }
+
+        private bool IsVideoResult()
+        {
+            if (Action == TaskAction.VIDEO)
+            {
+                return true;
+            }
+
+            if (!string.IsNullOrWhiteSpace(ContentType) && ContentType.StartsWith("video", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return !string.IsNullOrWhiteSpace(ImageUrl) && ImageUrl.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private List<TaskInfoImageUrl> BuildVideoImageUrls(string finalPrompt)
+        {
+            var urls = new List<TaskInfoImageUrl>();
+
+            if (!string.IsNullOrWhiteSpace(JobId))
+            {
+                var count = ResolveVideoBatchSize(finalPrompt);
+                for (int i = 0; i < count; i++)
+                {
+                    var videoUrl = $"https://{MIDJOURNEY_CDN}/video/{JobId}/0_{i}.mp4";
+                    urls.Add(new TaskInfoImageUrl(videoUrl));
+                }
+
+                return urls;
+            }
+
+            if (!string.IsNullOrWhiteSpace(ImageUrl))
+            {
+                urls.Add(new TaskInfoImageUrl(TransformUrl(ImageUrl)));
+            }
+
+            return urls;
+        }
+
+        private int ResolveVideoBatchSize(string finalPrompt)
+        {
+            var prompt = finalPrompt;
+
+            if (string.IsNullOrWhiteSpace(prompt))
+            {
+                prompt = PromptEn;
+            }
+
+            if (string.IsNullOrWhiteSpace(prompt))
+            {
+                prompt = Prompt;
+            }
+
+            if (!string.IsNullOrWhiteSpace(prompt))
+            {
+                var match = BatchSizeRegex.Match(prompt);
+                if (match.Success && int.TryParse(match.Groups["value"].Value, out var size))
+                {
+                    if (size == 1 || size == 2 || size == 4)
+                    {
+                        return size;
+                    }
+                }
+            }
+
+            return DefaultVideoBatchSize;
+        }
+
+        private List<TaskInfoImageUrl> BuildGridImageUrls()
+        {
+            var urls = new List<TaskInfoImageUrl>();
+
+            if (!string.IsNullOrWhiteSpace(JobId))
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    urls.Add(new TaskInfoImageUrl($"https://{MIDJOURNEY_CDN}/{JobId}/0_{i}.png"));
+                }
+
+                return urls;
+            }
+
+            if (!string.IsNullOrWhiteSpace(ImageUrl))
+            {
+                urls.Add(new TaskInfoImageUrl(TransformUrl(ImageUrl)));
+            }
+
+            return urls;
+        }
+
+        private bool HasFullUpscaleButtons()
+        {
+            if (Buttons == null || Buttons.Count == 0)
+            {
+                return false;
+            }
+
+            var indexes = new HashSet<int>();
+            foreach (var button in Buttons)
+            {
+                if (TryGetUpscaleIndex(button, out var idx))
+                {
+                    indexes.Add(idx);
+                }
+            }
+
+            return indexes.Count >= 4;
+        }
+
+        private static bool TryGetUpscaleIndex(CustomComponentModel button, out int index)
+        {
+            index = 0;
+
+            if (button == null)
+            {
+                return false;
+            }
+
+            var label = button.Label?.Trim();
+            if (!string.IsNullOrWhiteSpace(label) && label.StartsWith("U", StringComparison.OrdinalIgnoreCase))
+            {
+                for (int i = 1; i < label.Length; i++)
+                {
+                    if (char.IsDigit(label[i]))
+                    {
+                        index = label[i] - '0';
+                        return true;
+                    }
+                }
+            }
+
+            var customId = button.CustomId ?? string.Empty;
+            var match = UpscaleCustomIdRegex.Match(customId);
+            if (match.Success && int.TryParse(match.Groups["index"].Value, out var parsedIndex))
+            {
+                index = parsedIndex;
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
