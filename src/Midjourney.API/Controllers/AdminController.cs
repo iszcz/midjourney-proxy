@@ -1392,6 +1392,54 @@ namespace Midjourney.API.Controllers
         }
 
         /// <summary>
+        /// 诊断特定任务的状态，用于排查卡在 SUBMITTED 状态的任务
+        /// </summary>
+        /// <param name="taskId">任务ID</param>
+        /// <returns>诊断信息</returns>
+        [HttpGet("task/{taskId}/diagnose")]
+        public ActionResult<string> DiagnoseTask(string taskId)
+        {
+            if (string.IsNullOrWhiteSpace(taskId))
+            {
+                return BadRequest("任务ID不能为空");
+            }
+
+            // 尝试在所有实例中查找任务
+            var allInstances = _loadBalancer.GetAllInstances();
+            foreach (var instance in allInstances)
+            {
+                var task = instance.GetRunningTask(taskId);
+                if (task != null)
+                {
+                    // 找到任务所在的实例，返回诊断信息
+                    var diagnoseInfo = instance.DiagnoseTask(taskId);
+                    return Ok(diagnoseInfo);
+                }
+            }
+
+            // 如果不在运行任务列表中，尝试从数据库获取
+            var taskFromDb = DbHelper.Instance.TaskStore.Get(taskId);
+            if (taskFromDb != null)
+            {
+                // 尝试找到对应的实例
+                var instance = _loadBalancer.GetDiscordInstance(taskFromDb.InstanceId);
+                if (instance != null)
+                {
+                    var diagnoseInfo = instance.DiagnoseTask(taskId);
+                    return Ok(diagnoseInfo);
+                }
+                else
+                {
+                    return Ok($"⚠️ 任务 {taskId} 不在运行任务列表中，但存在于数据库。\n" +
+                             $"状态: {taskFromDb.Status}, 实例ID: {taskFromDb.InstanceId ?? "null"}\n" +
+                             $"提示: 该任务可能已完成或失败，或者对应的实例已不存在。");
+                }
+            }
+
+            return NotFound($"❌ 任务 {taskId} 不存在（不在运行任务列表，也不在数据库中）");
+        }
+
+        /// <summary>
         /// 删除作业
         /// </summary>
         /// <param name="id"></param>

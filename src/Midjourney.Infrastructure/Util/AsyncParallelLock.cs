@@ -130,20 +130,63 @@ namespace Midjourney.Infrastructure.Util
         /// </summary>
         public async Task LockAsync(CancellationToken cancellationToken = default)
         {
-            SemaphoreSlim semaphore;
-
-            lock (_syncLock)
+            // 🔧 修复：处理信号量被替换的竞态条件
+            // 如果在等待过程中信号量被替换（SetMaxParallelism），需要重新获取新的信号量引用
+            while (true)
             {
-                semaphore = _semaphore;
-            }
+                SemaphoreSlim semaphore;
 
-            // 在锁外等待，避免死锁
-            await semaphore.WaitAsync(cancellationToken);
+                lock (_syncLock)
+                {
+                    // 检查信号量是否已被释放（Dispose 后）
+                    if (_semaphore == null)
+                    {
+                        throw new ObjectDisposedException(nameof(AsyncParallelLock), "AsyncParallelLock 已被释放");
+                    }
+                    semaphore = _semaphore;
+                }
 
-            lock (_syncLock)
-            {
-                // 增加持有计数
-                _currentlyHeld++;
+                try
+                {
+                    // 在锁外等待，避免死锁
+                    await semaphore.WaitAsync(cancellationToken);
+
+                    // 等待成功后，再次检查信号量是否还是同一个（防止在等待期间被替换）
+                    lock (_syncLock)
+                    {
+                        // 如果信号量已被替换，释放当前获取的锁并重试
+                        if (_semaphore != semaphore)
+                        {
+                            // 释放旧信号量的锁
+                            semaphore.Release();
+                            // 继续循环，重新获取新的信号量引用
+                            continue;
+                        }
+
+                        // 信号量未被替换，增加持有计数
+                        _currentlyHeld++;
+                        return; // 成功获取锁
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 如果信号量在等待期间被 Dispose，检查是否已被替换
+                    lock (_syncLock)
+                    {
+                        if (_semaphore != semaphore && _semaphore != null)
+                        {
+                            // 信号量已被替换，继续循环重试
+                            continue;
+                        }
+                        // 如果整个对象已被释放，抛出异常
+                        if (_semaphore == null)
+                        {
+                            throw new ObjectDisposedException(nameof(AsyncParallelLock), "AsyncParallelLock 已被释放");
+                        }
+                    }
+                    // 其他情况，重新抛出异常
+                    throw;
+                }
             }
         }
 

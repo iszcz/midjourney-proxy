@@ -69,6 +69,7 @@ namespace Midjourney.Infrastructure.LoadBalancer
 
         private readonly CancellationTokenSource _longToken;
         private readonly ManualResetEvent _mre; // 信号
+        private volatile bool _disposed = false; // 是否已释放
 
         private readonly HttpClient _httpClient;
         private readonly DiscordHelper _discordHelper;
@@ -248,13 +249,19 @@ namespace Midjourney.Infrastructure.LoadBalancer
         /// <summary>
         /// 获取队列中的任务列表。
         /// </summary>
-        /// <returns>队列中的任务列表</returns>
+        /// <returns>队列中的任务列表（仅返回真正等待执行的任务，过滤掉已完成或失败的任务）</returns>
         public List<TaskInfo> GetQueueTasks() 
         {
             var allTasks = new List<TaskInfo>();
             allTasks.AddRange(_priorityQueueTasks.Select(c => c.Item1) ?? []);
             allTasks.AddRange(_queueTasks.Select(c => c.Item1) ?? []);
-            return allTasks;
+            
+            // 🔧 修复：过滤掉已完成或失败的任务，只返回真正等待执行的任务
+            // 如果队列中有已完成或失败的任务，说明这些任务的状态被更新了但还在队列中
+            // 这会导致等待任务数量计算错误
+            return allTasks
+                .Where(t => t != null && t.Status != TaskStatus.SUCCESS && t.Status != TaskStatus.FAILURE)
+                .ToList();
         }
 
         /// <summary>
@@ -294,13 +301,31 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 }
                 catch { }
 
+                // 🔧 修复：检查是否已释放，如果已释放则退出循环
+                if (_disposed)
+                {
+                    _logger.Information("账号实例 {ChannelId} 已释放，Running 方法退出", ChannelId);
+                    break;
+                }
+
                 try
                 {
                     // 如果队列中没有任务，则等待信号通知（使用超时等待，避免长时间阻塞）
                     if (_queueTasks.Count <= 0 && _priorityQueueTasks.Count <= 0)
                     {
-                        // 🔧 修复：使用超时等待（5秒），避免实例不可用时永久阻塞
-                        var signaled = _mre.WaitOne(5000);  // 最多等待5秒
+                        // 🔧 修复：使用 try-catch 保护 _mre.WaitOne()，防止 ObjectDisposedException
+                        bool signaled = false;
+                        try
+                        {
+                            // 使用超时等待（5秒），避免实例不可用时永久阻塞
+                            signaled = _mre.WaitOne(5000);  // 最多等待5秒
+                        }
+                        catch (ObjectDisposedException)
+                        {
+                            // _mre 已被释放，说明实例正在销毁，退出循环
+                            _logger.Warning("⚠️ 账号实例 {ChannelId} 在 Running 方法中 _mre 已被释放，退出循环", ChannelId);
+                            break;
+                        }
                         
                         // 🔍 诊断：记录等待超时（帮助定位Running循环停止的原因）
                         if (!signaled)
@@ -430,11 +455,28 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     // 首先尝试从优先队列获取任务
                     if (_priorityQueueTasks.TryPeek(out var priorityInfo))
                     {
+                        // 🔧 修复：如果任务已经完成或失败，从队列中移除并跳过
+                        if (priorityInfo.Item1 != null && (priorityInfo.Item1.Status == TaskStatus.SUCCESS || priorityInfo.Item1.Status == TaskStatus.FAILURE))
+                        {
+                            _priorityQueueTasks.TryDequeue(out _);
+                            _logger.Warning("⚠️ 频道 {@0} 从优先队列移除已完成的任务 {@1}, 状态: {@2}", 
+                                Account.ChannelId, priorityInfo.Item1.Id, priorityInfo.Item1.Status);
+                            continue; // 跳过本次循环，继续处理下一个任务
+                        }
+                        
                         // 判断是否还有资源可用
                         if (_semaphoreSlimLock.IsLockAvailable())
                         {
                             if (_priorityQueueTasks.TryDequeue(out priorityInfo))
                             {
+                                // 🔧 修复：再次检查任务状态（可能在 TryPeek 和 TryDequeue 之间状态被更新）
+                                if (priorityInfo.Item1 != null && (priorityInfo.Item1.Status == TaskStatus.SUCCESS || priorityInfo.Item1.Status == TaskStatus.FAILURE))
+                                {
+                                    _logger.Warning("⚠️ 频道 {@0} 从优先队列取出已完成的任务 {@1}, 状态: {@2}, 跳过执行", 
+                                        Account.ChannelId, priorityInfo.Item1.Id, priorityInfo.Item1.Status);
+                                    continue; // 跳过本次循环，继续处理下一个任务
+                                }
+                                
                                 taskToExecute = priorityInfo;
                                 isFromPriorityQueue = true;
                                 _logger.Information("✅ 频道 {@0} 从优先队列取出任务 {@1}", Account.ChannelId, priorityInfo.Item1?.Id);
@@ -445,11 +487,28 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     // 如果优先队列没有任务或没有可用资源，则从普通队列获取
                     if (taskToExecute.TaskInfo == null && _queueTasks.TryPeek(out var info))
                     {
+                        // 🔧 修复：如果任务已经完成或失败，从队列中移除并跳过
+                        if (info.Item1 != null && (info.Item1.Status == TaskStatus.SUCCESS || info.Item1.Status == TaskStatus.FAILURE))
+                        {
+                            _queueTasks.TryDequeue(out _);
+                            _logger.Warning("⚠️ 频道 {@0} 从普通队列移除已完成的任务 {@1}, 状态: {@2}", 
+                                Account.ChannelId, info.Item1.Id, info.Item1.Status);
+                            continue; // 跳过本次循环，继续处理下一个任务
+                        }
+                        
                         // 判断是否还有资源可用
                         if (_semaphoreSlimLock.IsLockAvailable())
                         {
                             if (_queueTasks.TryDequeue(out info))
                             {
+                                // 🔧 修复：再次检查任务状态（可能在 TryPeek 和 TryDequeue 之间状态被更新）
+                                if (info.Item1 != null && (info.Item1.Status == TaskStatus.SUCCESS || info.Item1.Status == TaskStatus.FAILURE))
+                                {
+                                    _logger.Warning("⚠️ 频道 {@0} 从普通队列取出已完成的任务 {@1}, 状态: {@2}, 跳过执行", 
+                                        Account.ChannelId, info.Item1.Id, info.Item1.Status);
+                                    continue; // 跳过本次循环，继续处理下一个任务
+                                }
+                                
                                 taskToExecute = info;
                                 isFromPriorityQueue = false;
                                 _logger.Information("✅ 频道 {@0} 从普通队列取出任务 {@1}", Account.ChannelId, info.Item1?.Id);
@@ -474,7 +533,34 @@ namespace Midjourney.Infrastructure.LoadBalancer
                         Thread.Sleep((int)(preSleep * 1000));
 
                         // 开始执行任务
-                        _taskFutureMap[taskToExecute.TaskInfo.Id] = ExecuteTaskAsync(taskToExecute.TaskInfo, taskToExecute.Handler);
+                        // 🔧 修复：包装 ExecuteTaskAsync 调用，确保异常能被捕获和记录
+                        var taskId = taskToExecute.TaskInfo.Id;
+                        try
+                        {
+                            _taskFutureMap[taskId] = ExecuteTaskAsync(taskToExecute.TaskInfo, taskToExecute.Handler)
+                                .ContinueWith(t =>
+                                {
+                                    // 捕获任务执行过程中的未处理异常
+                                    if (t.IsFaulted && t.Exception != null)
+                                    {
+                                        _logger.Error(t.Exception, "[{AccountDisplay}] ExecuteTaskAsync 任务执行异常，TaskId: {TaskId}", 
+                                            Account.GetDisplay(), taskId);
+                                    }
+                                }, TaskContinuationOptions.OnlyOnFaulted);
+                        }
+                        catch (Exception ex)
+                        {
+                            // 捕获任务创建时的异常（比如参数验证失败等）
+                            _logger.Error(ex, "[{AccountDisplay}] 创建 ExecuteTaskAsync 任务失败，TaskId: {TaskId}", 
+                                Account.GetDisplay(), taskId);
+                            
+                            // 标记任务为失败
+                            taskToExecute.TaskInfo.Fail($"[Internal Server Error] 任务创建失败: {ex.Message}");
+                            SaveAndNotify(taskToExecute.TaskInfo);
+                            
+                            // 从 FutureMap 中移除（如果已添加）
+                            _taskFutureMap.TryRemove(taskId, out _);
+                        }
 
                         // 计算执行后的间隔
                         var min = Account.AfterIntervalMin;
@@ -510,7 +596,17 @@ namespace Midjourney.Infrastructure.LoadBalancer
                     }
 
                     // 重新设置信号
-                    _mre.Reset();
+                    // 🔧 修复：使用 try-catch 保护 _mre.Reset()，防止 ObjectDisposedException
+                    try
+                    {
+                        _mre.Reset();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                        // _mre 已被释放，说明实例正在销毁，退出循环
+                        _logger.Warning("⚠️ 账号实例 {ChannelId} 在 Running 方法中 _mre.Reset() 时已被释放，退出循环", ChannelId);
+                        break;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -741,6 +837,13 @@ namespace Midjourney.Infrastructure.LoadBalancer
         /// <returns>任务提交结果</returns>
         public SubmitResultVO SubmitTaskAsync(TaskInfo info, Func<Task<Message>> discordSubmit)
         {
+            // 🔧 修复：检查是否已释放，防止 ObjectDisposedException
+            if (_disposed)
+            {
+                return SubmitResultVO.Fail(ReturnCode.FAILURE, "账号实例已释放，无法提交任务")
+                    .SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, ChannelId);
+            }
+
             // 检查是否为优先任务
             bool isPriority = info.IsPriority;
             
@@ -770,7 +873,18 @@ namespace Midjourney.Infrastructure.LoadBalancer
                 }
 
                 // 通知后台服务有新的任务
-                _mre.Set();
+                // 🔧 修复：使用 try-catch 捕获 ObjectDisposedException，防止在 Dispose 后调用
+                try
+                {
+                    _mre?.Set();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 如果 _mre 已被释放，说明实例正在销毁，返回失败
+                    _logger.Warning("⚠️ 账号实例 {ChannelId} 在提交任务时 _mre 已被释放", ChannelId);
+                    return SubmitResultVO.Fail(ReturnCode.FAILURE, "账号实例正在释放，无法提交任务")
+                        .SetProperty(Constants.TASK_PROPERTY_DISCORD_INSTANCE_ID, ChannelId);
+                }
 
                 if (currentWaitNumbers == 0)
                 {
@@ -810,10 +924,22 @@ namespace Midjourney.Infrastructure.LoadBalancer
             var lockAcquired = false;
             try
             {
+                // 🔧 修复：添加日志，记录任务开始执行（在获取信号量之前）
+                _logger.Information("[{@0}] 准备执行任务 {@1}，开始获取信号量", Account.GetDisplay(), info.Id);
+                
+                // 🔧 修复：检查是否已释放，防止在 Dispose 后调用
+                if (_disposed)
+                {
+                    _logger.Warning("[{@0}] 账号实例已释放，无法执行任务 {@1}", Account.GetDisplay(), info.Id);
+                    info.Fail("账号实例已释放，无法执行任务");
+                    SaveAndNotify(info);
+                    return;
+                }
+                
                 await _semaphoreSlimLock.LockAsync();
                 lockAcquired = true;
                 
-                _logger.Debug("[{@0}] 信号量已获取，开始执行任务 {@1}, 当前运行任务数: {@2}", Account.GetDisplay(), info.Id, _runningTasks.Count);
+                _logger.Information("[{@0}] 信号量已获取，开始执行任务 {@1}, 当前运行任务数: {@2}", Account.GetDisplay(), info.Id, _runningTasks.Count);
 
                 _runningTasks.TryAdd(info.Id, info);
 
@@ -1000,7 +1126,8 @@ namespace Midjourney.Infrastructure.LoadBalancer
             }
             catch (Exception ex)
             {
-                _logger.Error(ex, "[{AccountDisplay}] task execute error, id: {TaskId}", Account.GetDisplay(), info.Id);
+                _logger.Error(ex, "[{AccountDisplay}] task execute error, id: {TaskId}, lockAcquired: {LockAcquired}", 
+                    Account.GetDisplay(), info.Id, lockAcquired);
 
                 info.Fail("[Internal Server Error] " + ex.Message);
 
@@ -1074,6 +1201,88 @@ namespace Midjourney.Infrastructure.LoadBalancer
             if (heldCount > runningTasks.Count + 2 && runningTasks.Count == 0 && queueCount > 0)
             {
                 info += $"\n⚠️ 检测到信号量泄漏！已持有: {heldCount}, 实际运行: {runningTasks.Count}, 队列等待: {queueCount}";
+            }
+            
+            return info;
+        }
+
+        /// <summary>
+        /// 诊断特定任务的状态，用于排查卡在 SUBMITTED 状态的任务
+        /// </summary>
+        /// <param name="taskId">任务ID</param>
+        /// <returns>诊断信息</returns>
+        public string DiagnoseTask(string taskId)
+        {
+            var task = GetRunningTask(taskId);
+            if (task == null)
+            {
+                // 尝试从数据库获取
+                task = GetTask(taskId);
+                if (task == null)
+                {
+                    return $"❌ 任务 {taskId} 不存在（不在运行任务列表，也不在数据库中）";
+                }
+                return $"⚠️ 任务 {taskId} 不在运行任务列表中，但存在于数据库。状态: {task.Status}, 实例ID: {task.InstanceId ?? "null"}";
+            }
+
+            var now = DateTimeOffset.Now.ToUnixTimeMilliseconds();
+            var elapsed = task.StartTime.HasValue ? (now - task.StartTime.Value) / 1000 : 0;
+            var submitElapsed = task.SubmitTime.HasValue ? (now - task.SubmitTime.Value) / 1000 : 0;
+            
+            var info = $"📋 任务诊断信息 - TaskId: {taskId}\n";
+            info += $"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            info += $"状态: {task.Status}\n";
+            info += $"动作: {task.Action}\n";
+            info += $"进度: {task.Progress ?? "null"}\n";
+            info += $"提交时间: {(task.SubmitTime.HasValue ? DateTimeOffset.FromUnixTimeMilliseconds(task.SubmitTime.Value).ToString("yyyy-MM-dd HH:mm:ss") : "null")} (已过 {submitElapsed} 秒)\n";
+            info += $"开始时间: {(task.StartTime.HasValue ? DateTimeOffset.FromUnixTimeMilliseconds(task.StartTime.Value).ToString("yyyy-MM-dd HH:mm:ss") : "null")} (已过 {elapsed} 秒)\n";
+            info += $"实例ID: {task.InstanceId ?? "null"}\n";
+            info += $"账号: {Account?.GetDisplay() ?? "null"}\n";
+            info += $"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            info += $"🔑 消息匹配关键信息:\n";
+            info += $"  MessageId: {task.MessageId ?? "null"}\n";
+            info += $"  InteractionMetadataId: {task.InteractionMetadataId ?? "null"}\n";
+            info += $"  Nonce: {task.Nonce ?? "null"}\n";
+            info += $"  MessageIds: [{(task.MessageIds?.Any() == true ? string.Join(", ", task.MessageIds) : "空")}]\n";
+            info += $"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            info += $"📝 提示词信息:\n";
+            info += $"  Prompt: {task.Prompt ?? "null"}\n";
+            info += $"  PromptEn: {task.PromptEn ?? "null"}\n";
+            info += $"  PromptFull: {task.PromptFull ?? "null"}\n";
+            info += $"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            info += $"🔧 系统状态:\n";
+            info += $"  实例是否存活: {IsAlive}\n";
+            info += $"  WebSocket运行: {WebSocketManager?.Running ?? false}\n";
+            info += $"  是否在运行任务列表: {_runningTasks.ContainsKey(taskId)}\n";
+            info += $"  是否在FutureMap: {_taskFutureMap.ContainsKey(taskId)}\n";
+            info += $"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
+            
+            if (task.Status == TaskStatus.SUBMITTED)
+            {
+                info += $"⚠️ 任务卡在 SUBMITTED 状态的可能原因:\n";
+                
+                if (string.IsNullOrWhiteSpace(task.MessageId) && string.IsNullOrWhiteSpace(task.InteractionMetadataId))
+                {
+                    info += $"  1. ❌ 缺少消息匹配标识（MessageId 和 InteractionMetadataId 都为空）\n";
+                    info += $"     → Discord 可能没有返回交互成功的响应，或响应解析失败\n";
+                }
+                else if (string.IsNullOrWhiteSpace(task.InteractionMetadataId))
+                {
+                    info += $"  2. ⚠️ 缺少 InteractionMetadataId（只有 MessageId）\n";
+                    info += $"     → 消息匹配可能失败，系统依赖 InteractionMetadataId 进行更稳定的匹配\n";
+                }
+                
+                if (elapsed > 120)
+                {
+                    info += $"  3. ⚠️ 已等待 {elapsed} 秒，超过默认提前失败阈值（120秒）\n";
+                    info += $"     → 如果启用了提前失败机制，任务应该已经被标记为失败\n";
+                }
+                
+                info += $"  4. 可能的原因:\n";
+                info += $"     - Discord WebSocket 消息未收到或丢失\n";
+                info += $"     - 消息匹配失败（MessageId/InteractionMetadataId 不匹配）\n";
+                info += $"     - Discord 服务响应延迟或被限流（CF/429）\n";
+                info += $"     - WebSocket 连接异常\n";
             }
             
             return info;
@@ -1163,19 +1372,28 @@ namespace Midjourney.Infrastructure.LoadBalancer
         {
             try
             {
+                // 🔧 修复：先设置 _disposed 标志，防止后续操作访问已释放的资源
+                _disposed = true;
+
                 // 清除缓存
                 ClearAccountCache(Account?.Id);
 
                 BotMessageListener?.Dispose();
                 WebSocketManager?.Dispose();
 
-                _mre.Set();
-
                 // 任务取消
                 _longToken.Cancel();
 
                 // 停止后台任务
-                _mre.Set(); // 解除等待，防止死锁
+                // 🔧 修复：使用 try-catch 防止在 _mre 已释放时调用 Set
+                try
+                {
+                    _mre?.Set(); // 解除等待，防止死锁
+                }
+                catch (ObjectDisposedException)
+                {
+                    // _mre 可能已被释放，忽略异常
+                }
 
                 // 清理后台任务
                 if (_longTask != null && !_longTask.IsCompleted)
