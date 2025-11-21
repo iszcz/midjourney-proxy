@@ -729,7 +729,7 @@ namespace Midjourney.Base.Models
                 var videoUrls = BuildVideoUrls(finalPrompt);
                 VideoUrls = videoUrls != null && videoUrls.Count > 0 ? videoUrls : null;
                 
-                // 同时设置 VideoUrl 和 ImageUrls（兼容性）
+                // 同时设置 VideoUrl 和 ImageUrls
                 VideoUrl = ImageUrl;
                 if (VideoUrls != null && VideoUrls.Count > 0)
                 {
